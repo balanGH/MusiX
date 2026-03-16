@@ -1,0 +1,29 @@
+# Core dependencies
+torch==2.1.2          # PyTorch CPU build
+torchaudio==2.1.2     # Audio package matching torch
+torchvision==0.16.2   # Optional if using vision models
+
+# Demucs for audio source separation
+demucs==3.0           # Latest stable Demucs
+
+# Audio processing and conversion
+ffmpeg-python==0.5.0  # Python wrapper for ffmpeg
+numpy==1.25           # Compatible with PyTorch & Demucs
+
+# YouTube downloads
+yt-dlp==2026.03.16    # For downloading audio from YouTube
+
+# Optional utilities
+pydub==0.25.1         # For manipulating audio files if needed
+
+# fastapi==0.109.0
+# uvicorn[standard]==0.27.0
+# python-multipart==0.0.6
+# yt-dlp>=2023.12.30,<2025
+# demucs==4.0.1
+# torch==2.1.2
+# torchaudio==2.1.2
+# aiofiles==23.2.1
+# pydantic==2.5.3
+
+# # pip install fastapi uvicorn python-multipart yt-dlp demucs pydantic aiofiles
