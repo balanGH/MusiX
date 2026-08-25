@@ -38,6 +38,10 @@ export function StemMixer({ job }: { job: JobState }) {
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
+  // While dragging, the slider shows this instead of the live `position` —
+  // otherwise the sync loop's per-frame setPosition(now) fights the drag and
+  // snaps the thumb back before a release can ever register a seek.
+  const [dragging, setDragging] = useState<number | null>(null);
   const [levels, setLevels] = useState<Record<string, { volume: number; muted: boolean; solo: boolean }>>(
     {},
   );
@@ -215,11 +219,13 @@ export function StemMixer({ job }: { job: JobState }) {
   const seek = useCallback((seconds: number) => {
     for (const channel of channelsRef.current) channel.element.currentTime = seconds;
     setPosition(seconds);
+    setDragging(null);
   }, []);
 
   if (job.status !== 'complete') return null;
 
   const anySolo = Object.values(levels).some((level) => level.solo);
+  const shownPosition = dragging ?? position;
 
   return (
     <div className="rounded-panel border border-line bg-surface p-4">
@@ -262,15 +268,15 @@ export function StemMixer({ job }: { job: JobState }) {
         </IconButton>
 
         <span className="w-11 shrink-0 text-right text-2xs tabular-nums text-subtle">
-          {formatDuration(position * 1000)}
+          {formatDuration(shownPosition * 1000)}
         </span>
         <Slider
           label="Seek the mix"
-          value={position}
+          value={shownPosition}
           min={0}
           max={duration > 0 ? duration : 1}
           step={0.1}
-          onValueChange={setPosition}
+          onValueChange={setDragging}
           onCommit={seek}
           className="flex-1"
           disabled={!ready}

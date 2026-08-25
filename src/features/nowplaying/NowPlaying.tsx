@@ -255,13 +255,16 @@ export function NowPlaying() {
             </>
           )}
 
-          {stemStatus.kind === 'ready' && mixerOpen && (
+          {stemStatus.kind === 'ready' && mixerOpen ? (
+            // The mixer has its own seek bar and is the "playing line" while it's
+            // open — the main track is paused, so showing both would be two seek
+            // bars for one thing playing.
             <div className="mt-4 max-h-[45vh] overflow-y-auto">
               <StemMixer job={stemStatus.job} />
             </div>
+          ) : (
+            <NowPlayingSeek durationMs={track.durationMs} />
           )}
-
-          <NowPlayingSeek durationMs={track.durationMs} />
 
           {/* Transport */}
           <div className="mt-4 flex items-center justify-center gap-3">

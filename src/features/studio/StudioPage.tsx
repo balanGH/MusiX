@@ -265,8 +265,9 @@ export function StudioPage() {
               )}
             </section>
 
-            {/* Progress */}
-            {(busy || active) && (
+            {/* Progress — hidden once the job is complete, since the mixer's own
+                transport below is the live "playing line" from that point on. */}
+            {(busy || (active && active.status !== 'complete')) && (
               <JobProgress
                 job={active}
                 uploadFraction={uploadFraction}
