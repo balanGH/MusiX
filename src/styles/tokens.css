@@ -1,0 +1,324 @@
+/*
+ * Design tokens.
+ *
+ * Every colour is an unquoted `r g b` triple so Tailwind can apply its own
+ * alpha (`bg-surface/60`). Themes therefore change one attribute on <html> and
+ * nothing re-renders — which is also why index.html can set the theme before
+ * first paint and avoid a flash.
+ *
+ * Accent precedence, resolved entirely in CSS:
+ *   dynamic (from album artwork, spec §38)
+ *     → user-chosen accent
+ *       → the MusiX violet
+ */
+
+:root {
+  /* ---- Light (the default; index.html switches to dark when appropriate) ---- */
+  --mx-bg: 249 249 251;
+  --mx-bg-elevated: 255 255 255;
+  --mx-surface: 255 255 255;
+  --mx-surface-hover: 243 243 246;
+  --mx-surface-active: 235 235 240;
+  --mx-line: 228 228 234;
+  --mx-line-strong: 205 205 214;
+  --mx-text: 22 22 27;
+  --mx-text-muted: 88 88 99;
+  --mx-text-subtle: 130 130 143;
+
+  --mx-accent-default: 124 58 237;
+  --mx-accent: var(--mx-accent-dynamic, var(--mx-accent-user, var(--mx-accent-default)));
+  --mx-accent-hover: var(--mx-accent);
+  --mx-accent-fg: 255 255 255;
+
+  --mx-danger: 220 38 60;
+  --mx-warn: 180 120 10;
+  --mx-ok: 15 145 100;
+
+  /* Height of the persistent player bar; layouts reserve exactly this. */
+  --mx-player-height: 76px;
+  --mx-sidebar-width: 248px;
+  --mx-nav-height: 60px;
+
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --mx-bg: 11 11 15;
+  --mx-bg-elevated: 18 18 25;
+  --mx-surface: 22 22 30;
+  --mx-surface-hover: 30 30 40;
+  --mx-surface-active: 38 38 49;
+  --mx-line: 38 38 48;
+  --mx-line-strong: 54 54 66;
+  --mx-text: 244 244 246;
+  --mx-text-muted: 160 160 173;
+  --mx-text-subtle: 110 110 124;
+
+  --mx-accent-default: 139 92 246;
+  --mx-accent-hover: 167 139 250;
+  --mx-accent-fg: 255 255 255;
+
+  --mx-danger: 251 113 133;
+  --mx-warn: 250 204 21;
+  --mx-ok: 52 211 153;
+
+  color-scheme: dark;
+}
+
+/*
+ * AMOLED: true black, so unlit pixels really are off. Borders carry more of the
+ * structure here because there is no elevation difference to rely on.
+ */
+:root[data-theme='amoled'] {
+  --mx-bg: 0 0 0;
+  --mx-bg-elevated: 8 8 10;
+  --mx-surface: 12 12 15;
+  --mx-surface-hover: 22 22 27;
+  --mx-surface-active: 32 32 38;
+  --mx-line: 30 30 36;
+  --mx-line-strong: 48 48 56;
+  --mx-text: 245 245 247;
+  --mx-text-muted: 158 158 170;
+  --mx-text-subtle: 105 105 118;
+
+  --mx-accent-default: 139 92 246;
+  --mx-accent-hover: 167 139 250;
+  --mx-accent-fg: 255 255 255;
+
+  --mx-danger: 251 113 133;
+  --mx-warn: 250 204 21;
+  --mx-ok: 52 211 153;
+
+  color-scheme: dark;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Base                                                                       */
+/* ------------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: rgb(var(--mx-bg));
+  color: rgb(var(--mx-text));
+  font-family:
+    InterVariable, Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* The app owns its own scroll containers; the page itself never scrolls. */
+  overflow: hidden;
+  /* Respect notches and home indicators on mobile. */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+
+/* Keyboard focus must always be visible (spec §39); pointer focus need not be. */
+:focus-visible {
+  outline: 2px solid rgb(var(--mx-accent));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Scrollbars — thin, and only visible over a scrollable region               */
+/* ------------------------------------------------------------------------- */
+
+.mx-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--mx-line-strong)) transparent;
+}
+
+.mx-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.mx-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mx-scroll::-webkit-scrollbar-thumb {
+  background: rgb(var(--mx-line-strong));
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 6px;
+}
+
+.mx-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--mx-text-subtle));
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Range inputs — sliders appear in the player, EQ and mixer                  */
+/* ------------------------------------------------------------------------- */
+
+.mx-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 18px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.mx-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  /* `--mx-fill` is set inline by the component to the played fraction. */
+  background: linear-gradient(
+    to right,
+    rgb(var(--mx-accent)) 0%,
+    rgb(var(--mx-accent)) var(--mx-fill, 0%),
+    rgb(var(--mx-line-strong)) var(--mx-fill, 0%),
+    rgb(var(--mx-line-strong)) 100%
+  );
+}
+
+.mx-range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgb(var(--mx-line-strong));
+}
+
+.mx-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: rgb(var(--mx-accent));
+}
+
+.mx-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: rgb(var(--mx-text));
+  border: none;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.4);
+  transition: transform 120ms ease;
+}
+
+.mx-range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgb(var(--mx-text));
+  border: none;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.4);
+}
+
+.mx-range:hover::-webkit-slider-thumb,
+.mx-range:focus-visible::-webkit-slider-thumb {
+  transform: scale(1.25);
+}
+
+/* A thumb that only appears on hover, for the seek bar. */
+.mx-range-ghost::-webkit-slider-thumb {
+  opacity: 0;
+}
+
+.mx-range-ghost:hover::-webkit-slider-thumb,
+.mx-range-ghost:focus-visible::-webkit-slider-thumb {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Utilities                                                                  */
+/* ------------------------------------------------------------------------- */
+
+/* Two-line clamp for track titles in grid cards. */
+.mx-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* The playing-track equaliser glyph in list rows. */
+.mx-bars > span {
+  display: block;
+  width: 2px;
+  background: rgb(var(--mx-accent));
+  border-radius: 1px;
+  transform-origin: bottom;
+  animation: mx-bar-dance 900ms ease-in-out infinite;
+}
+
+.mx-bars > span:nth-child(2) {
+  animation-delay: 180ms;
+}
+
+.mx-bars > span:nth-child(3) {
+  animation-delay: 360ms;
+}
+
+@keyframes mx-bar-dance {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+/* Screen-reader-only text, for icon-only controls (spec §39). */
+.mx-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/*
+ * Reduced motion (spec §39).
+ *
+ * Animation is removed rather than shortened: a user who asks for no motion
+ * means it, including the dancing bars and every transition.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .mx-bars > span {
+    transform: scaleY(0.7);
+  }
+}
+
+/* High contrast: strengthen every border and drop subtle greys. */
+@media (prefers-contrast: more) {
+  :root {
+    --mx-line: var(--mx-line-strong);
+    --mx-text-subtle: var(--mx-text-muted);
+  }
+}

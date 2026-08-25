@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>MusiX</title>
+    <meta
+      name="description"
+      content="Offline-first music library, player, metadata manager and audio studio. Your music stays on your device."
+    />
+    <meta name="theme-color" content="#0b0b0f" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="MusiX" />
+    <link rel="icon" type="image/svg+xml" href="/icons/favicon.svg" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <script>
+      // Applied before first paint so there is no theme flash on launch.
+      try {
+        var s = JSON.parse(localStorage.getItem('musix.settings') || '{}');
+        var t = (s.state && s.state.theme) || 'system';
+        var resolved =
+          t === 'system'
+            ? window.matchMedia('(prefers-color-scheme: light)').matches
+              ? 'light'
+              : 'dark'
+            : t;
+        document.documentElement.dataset.theme = resolved;
+        if (s.state && s.state.accent) {
+          document.documentElement.style.setProperty('--mx-accent-user', s.state.accent);
+        }
+      } catch (e) {
+        document.documentElement.dataset.theme = 'dark';
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>MusiX needs JavaScript to decode, index and play your music library.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
