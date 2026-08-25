@@ -103,6 +103,15 @@ export async function probeService(): Promise<ServiceInfo | null> {
 export interface SeparateOptions {
   /** Which stems to produce. Fewer is faster. */
   stems: StemName[];
+  /**
+   * Human-readable label for the job, e.g. "Radiohead - Kid A".
+   *
+   * Separate from `filename` on purpose: the server reads the *filename* to
+   * decide which decoder to use, so it must keep its extension. Passing a
+   * prettified name as the filename is what made every upload fail with
+   * "this file type is not supported".
+   */
+  displayName?: string;
   signal?: AbortSignal;
   onUploadProgress?(fraction: number): void;
 }
@@ -113,16 +122,27 @@ export interface SeparateOptions {
  * `XMLHttpRequest` rather than `fetch`, purely because it reports upload
  * progress — a 60 MB FLAC over localhost is quick, but silence during an upload
  * reads as a hang.
+ *
+ * @param filename The real filename, **including its extension**. For a nicer
+ *   label in the UI use `options.displayName`.
  */
+export interface SubmitResult {
+  jobId: string;
+  /** True when this reused a previous job for the same audio instead of re-separating it. */
+  reused: boolean;
+}
+
 export function submitFile(
   file: Blob,
   filename: string,
   options: SeparateOptions,
-): Promise<{ jobId: string }> {
+): Promise<SubmitResult> {
   return new Promise((resolve, reject) => {
     const form = new FormData();
+    // `filename` must keep its extension — the server picks its decoder from it.
     form.append('file', file, filename);
     form.append('stems', options.stems.join(','));
+    if (options.displayName) form.append('name', options.displayName);
 
     const request = new XMLHttpRequest();
     request.open('POST', `${API_BASE}/jobs`);
@@ -134,7 +154,8 @@ export function submitFile(
     request.addEventListener('load', () => {
       if (request.status >= 200 && request.status < 300) {
         try {
-          resolve(JSON.parse(request.responseText) as { jobId: string });
+          const body = JSON.parse(request.responseText) as { jobId: string; reused?: boolean };
+          resolve({ jobId: body.jobId, reused: body.reused ?? false });
         } catch {
           reject(new Error('The studio service returned an unreadable response.'));
         }

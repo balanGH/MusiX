@@ -72,16 +72,22 @@ export function StudioPage() {
     void recentlyAdded(12).then(setRecent);
   }, [probe]);
 
+  /**
+   * @param filename Real filename with its extension — the server reads the
+   *   format from it.
+   * @param displayName What to show in the UI.
+   */
   const separate = useCallback(
-    async (blob: Blob, name: string) => {
+    async (blob: Blob, filename: string, displayName: string) => {
       setBusy(true);
       setUploadFraction(0);
       const controller = new AbortController();
       abortRef.current = controller;
 
       try {
-        const { jobId } = await submitFile(blob, name, {
+        const { jobId, reused } = await submitFile(blob, filename, {
           stems: selectedStems,
+          displayName,
           signal: controller.signal,
           onUploadProgress: setUploadFraction,
         });
@@ -95,12 +101,18 @@ export function StudioPage() {
         setActive(finished);
         setJobs(await listJobs().catch(() => []));
 
-        toast(
-          finished.status === 'complete'
-            ? `Separated “${name}” into ${finished.stems.length} stems.`
-            : `Separation failed: ${finished.error ?? 'unknown error'}`,
-          { kind: finished.status === 'complete' ? 'success' : 'error' },
-        );
+        if (finished.status === 'complete' && reused) {
+          toast(`“${displayName}” was already separated — reusing those stems.`, {
+            kind: 'success',
+          });
+        } else {
+          toast(
+            finished.status === 'complete'
+              ? `Separated “${displayName}” into ${finished.stems.length} stems.`
+              : `Separation failed: ${finished.error ?? 'unknown error'}`,
+            { kind: finished.status === 'complete' ? 'success' : 'error' },
+          );
+        }
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') {
           toast('Separation cancelled.', { kind: 'info' });
@@ -125,7 +137,8 @@ export function StudioPage() {
         });
         return;
       }
-      await separate(file, `${track.artist} - ${track.title}`);
+      // `track.filename` keeps the extension; the pretty name is just a label.
+      await separate(file, track.filename, `${track.artist} - ${track.title}`);
     },
     [separate, toast],
   );
@@ -208,7 +221,9 @@ export function StudioPage() {
                     input.accept = 'audio/*';
                     input.addEventListener('change', () => {
                       const file = input.files?.[0];
-                      if (file) void separate(file, file.name.replace(/\.[^.]+$/, ''));
+                      if (file) {
+                        void separate(file, file.name, file.name.replace(/\.[^.]+$/, ''));
+                      }
                     });
                     input.click();
                   }}

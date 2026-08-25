@@ -25,6 +25,7 @@ What changed from the previous version, and why:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 import uuid
@@ -70,6 +71,9 @@ class Job:
     sourceName: str  # noqa: N815
     stems: list[StemInfo] = field(default_factory=list)
     error: str | None = None
+    # sha256 of the uploaded audio, used to skip re-separating a file that was
+    # already processed. None for jobs persisted before this field existed.
+    sourceHash: str | None = None  # noqa: N815
     createdAt: float = field(default_factory=lambda: time.time() * 1000)  # noqa: N815
     updatedAt: float = field(default_factory=lambda: time.time() * 1000)  # noqa: N815
 
@@ -122,6 +126,25 @@ def load_state() -> None:
             continue
 
         JOBS[job.jobId] = job
+
+
+def find_reusable_job(source_hash: str, needed_stems: list[str]) -> Job | None:
+    """A completed job for the same audio that already has the needed stems.
+
+    Keyed on content hash rather than filename or track id, so the same song
+    reuploaded under a different name — or re-run from the library after being
+    renamed — still hits the cache instead of re-running Demucs.
+    """
+    needed = set(needed_stems)
+    for job in JOBS.values():
+        if job.status != "complete" or job.sourceHash != source_hash:
+            continue
+        available = {stem.name for stem in job.stems}
+        if not needed.issubset(available):
+            continue
+        if all((config.OUTPUT_DIR / job.jobId / f"{name}.wav").is_file() for name in needed):
+            return job
+    return None
 
 
 def prune_jobs() -> None:
@@ -179,7 +202,8 @@ async def get_job(job_id: str) -> dict:
 async def create_job(
     file: UploadFile = File(...),
     stems: str = Form("vocals,drums,bass,other"),
-) -> dict[str, str]:
+    name: str = Form(""),
+) -> dict[str, object]:
     """Accept an upload and start separating it."""
     if not config.ffmpeg_available():
         raise HTTPException(
@@ -189,10 +213,18 @@ async def create_job(
     filename = Path(file.filename or "audio")
     extension = filename.suffix.lower()
     if extension not in config.ALLOWED_EXTENSIONS:
+        # Quote what actually arrived. A missing extension and an unsupported
+        # one need completely different fixes, and the old wording ("this file
+        # type") hid which of the two had happened.
+        received = f"“{file.filename}”" if file.filename else "an unnamed upload"
+        problem = (
+            f"{received} has no file extension, so the format cannot be determined"
+            if not extension
+            else f"“{extension}” is not supported"
+        )
         raise HTTPException(
             400,
-            f"“{extension or 'this file type'}” is not supported. "
-            f"Use one of: {', '.join(sorted(config.ALLOWED_EXTENSIONS))}.",
+            f"{problem}. Use one of: {', '.join(sorted(config.ALLOWED_EXTENSIONS))}.",
         )
 
     job_id = uuid.uuid4().hex
@@ -200,7 +232,10 @@ async def create_job(
 
     # Stream to disk with the limit enforced as we go, so an oversized upload is
     # rejected before it has been fully received — never buffered in memory.
+    # Hashed on the way past so a repeat upload of the same audio can be
+    # recognised without a second read of the file.
     written = 0
+    hasher = hashlib.sha256()
     try:
         with upload_path.open("wb") as sink:
             while chunk := await file.read(config.UPLOAD_CHUNK_BYTES):
@@ -213,6 +248,7 @@ async def create_job(
                         f"That file is larger than the "
                         f"{config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.",
                     )
+                hasher.update(chunk)
                 sink.write(chunk)
     except HTTPException:
         raise
@@ -224,13 +260,27 @@ async def create_job(
         upload_path.unlink(missing_ok=True)
         raise HTTPException(400, "The uploaded file was empty.")
 
+    source_hash = hasher.hexdigest()
     requested = [stem.strip() for stem in stems.split(",") if stem.strip()]
+    _model, needed_stems = config.stems_for(requested)
+
+    reusable = find_reusable_job(source_hash, needed_stems)
+    if reusable is not None:
+        # Same audio, already separated (possibly under a different name or
+        # for a different stem selection covered by the same model) — the
+        # stems are still on disk, so there is nothing to run again.
+        upload_path.unlink(missing_ok=True)
+        return {"jobId": reusable.jobId, "reused": True}
+
     job = Job(
         jobId=job_id,
         status="queued",
         progress=0,
         stage="Queued",
-        sourceName=filename.stem,
+        # The client's label if it sent one, otherwise the filename without its
+        # extension. Used for the UI and for naming downloaded stems.
+        sourceName=name.strip() or filename.stem,
+        sourceHash=source_hash,
     )
     JOBS[job_id] = job
     CANCELS[job_id] = asyncio.Event()
@@ -242,7 +292,7 @@ async def create_job(
     # after the response is sent but blocks the worker while it does.
     asyncio.create_task(run_job(job_id, upload_path, requested))
 
-    return {"jobId": job_id}
+    return {"jobId": job_id, "reused": False}
 
 
 @app.delete("/api/jobs/{job_id}")
