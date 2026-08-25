@@ -1,48 +1,5 @@
+@import './styles/tokens.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-@layer utilities {
-  .slider {
-    -webkit-appearance: none;
-  }
-
-  .slider::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: #a855f7;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-
-  .slider::-webkit-slider-thumb:hover {
-    background: #9333ea;
-    transform: scale(1.2);
-  }
-
-  .slider::-moz-range-thumb {
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: #a855f7;
-    cursor: pointer;
-    border: none;
-    transition: all 0.2s;
-  }
-
-  .slider::-moz-range-thumb:hover {
-    background: #9333ea;
-    transform: scale(1.2);
-  }
-
-  .delay-75 {
-    animation-delay: 75ms;
-  }
-
-  .delay-150 {
-    animation-delay: 150ms;
-  }
-}
