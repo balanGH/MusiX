@@ -28,6 +28,14 @@ const API_BASE = '/api';
 export const STEM_NAMES = ['vocals', 'drums', 'bass', 'guitar', 'piano', 'other'] as const;
 export type StemName = (typeof STEM_NAMES)[number];
 
+/** What a one-click separation (no stem picker shown) asks for. */
+export const DEFAULT_STEMS: StemName[] = ['vocals', 'drums', 'bass', 'other'];
+
+/** The label a track is submitted under — also how a prior job for it is recognised. */
+export function trackDisplayName(track: { artist: string; title: string }): string {
+  return `${track.artist} - ${track.title}`;
+}
+
 export type JobStatus = 'queued' | 'downloading' | 'converting' | 'separating' | 'complete' | 'failed';
 
 export interface StemInfo {

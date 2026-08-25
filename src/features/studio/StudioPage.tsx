@@ -21,10 +21,12 @@ import {
 } from 'lucide-react';
 import {
   cancelJob,
+  DEFAULT_STEMS,
   listJobs,
   probeService,
   STEM_NAMES,
   submitFile,
+  trackDisplayName,
   waitForJob,
   type JobState,
   type ServiceInfo,
@@ -40,9 +42,6 @@ import { Artwork } from '@ui/Artwork';
 import { Button, Chip, ProgressBar, Spinner, cx } from '@ui/primitives';
 import { PageHeader } from '@ui/PageHeader';
 import { StemMixer } from './StemMixer';
-
-/** Four stems is the default model; six needs `htdemucs_6s` and is slower. */
-const DEFAULT_STEMS: StemName[] = ['vocals', 'drums', 'bass', 'other'];
 
 export function StudioPage() {
   const currentTrack = usePlayer((state) => state.track);
@@ -138,7 +137,7 @@ export function StudioPage() {
         return;
       }
       // `track.filename` keeps the extension; the pretty name is just a label.
-      await separate(file, track.filename, `${track.artist} - ${track.title}`);
+      await separate(file, track.filename, trackDisplayName(track));
     },
     [separate, toast],
   );

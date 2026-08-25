@@ -8,10 +8,11 @@
  * at scan time, so this costs a database read, not an image analysis.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ChevronDown,
+  ChevronUp,
   Heart,
   ListMusic,
   Mic2,
@@ -19,6 +20,7 @@ import {
   Play,
   Repeat,
   Repeat1,
+  Scissors,
   Shuffle,
   SkipBack,
   SkipForward,
@@ -26,14 +28,32 @@ import {
 } from 'lucide-react';
 import { getLyrics } from '@core/db/repositories/lyrics';
 import { setFavorite } from '@core/db/repositories/tracks';
+import { openTrackFile } from '@core/platform';
+import {
+  DEFAULT_STEMS,
+  listJobs,
+  probeService,
+  submitFile,
+  trackDisplayName,
+  waitForJob,
+  type JobState,
+} from '@core/studio/client';
 import { formatDuration, formatQuality } from '@core/utils';
 import { useArtwork } from '@state/artworkCache';
 import { playerActions, usePlayer, usePlayerPosition } from '@state/playerStore';
 import { useUi } from '@state/uiStore';
-import type { Lyrics } from '@core/types';
+import type { Lyrics, Track } from '@core/types';
 import { Artwork } from '@ui/Artwork';
-import { Chip, IconButton, Slider, cx } from '@ui/primitives';
+import { StemMixer } from '@features/studio/StemMixer';
+import { Button, Chip, IconButton, Slider, Spinner, cx } from '@ui/primitives';
 import { LyricsView } from './LyricsView';
+
+type StemStatus =
+  | { kind: 'idle' }
+  | { kind: 'unavailable' }
+  | { kind: 'none' }
+  | { kind: 'ready'; job: JobState }
+  | { kind: 'processing'; progress: number; stage: string };
 
 export function NowPlaying() {
   const open = useUi((state) => state.nowPlayingOpen);
@@ -43,11 +63,89 @@ export function NowPlaying() {
   const status = usePlayer((state) => state.status);
   const shuffle = usePlayer((state) => state.queue.shuffle);
   const repeat = usePlayer((state) => state.queue.repeat);
+  const toast = useUi((state) => state.toast);
   const navigate = useNavigate();
 
   const [lyrics, setLyrics] = useState<Lyrics | null>(null);
   const [showLyrics, setShowLyrics] = useState(false);
+  const [stemStatus, setStemStatus] = useState<StemStatus>({ kind: 'idle' });
+  const [mixerOpen, setMixerOpen] = useState(false);
   const { dominant } = useArtwork(track?.artworkId ?? null, false);
+
+  // Has this track already been split into stems? Checked against the local
+  // studio service's job list, not run speculatively (spec §4) — separation
+  // only ever starts when "Split into stems" below is pressed.
+  useEffect(() => {
+    setMixerOpen(false);
+    if (!open || !track) return;
+    let cancelled = false;
+    setStemStatus({ kind: 'idle' });
+    void (async () => {
+      const service = await probeService();
+      if (cancelled) return;
+      if (!service) {
+        setStemStatus({ kind: 'unavailable' });
+        return;
+      }
+      const jobs = await listJobs().catch(() => []);
+      if (cancelled) return;
+      const label = trackDisplayName(track);
+      const match = jobs.find((job) => job.status === 'complete' && job.sourceName === label);
+      setStemStatus(match ? { kind: 'ready', job: match } : { kind: 'none' });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, track]);
+
+  const processStems = useCallback(
+    async (target: Track) => {
+      setStemStatus({ kind: 'processing', progress: 0, stage: 'Opening file' });
+      try {
+        const file = await openTrackFile(target);
+        if (!file) {
+          toast(`“${target.title}” could not be opened. The folder may need reconnecting.`, {
+            kind: 'error',
+          });
+          setStemStatus({ kind: 'none' });
+          return;
+        }
+
+        const { jobId } = await submitFile(file, target.filename, {
+          stems: DEFAULT_STEMS,
+          displayName: trackDisplayName(target),
+        });
+        const finished = await waitForJob(jobId, (state) =>
+          setStemStatus({ kind: 'processing', progress: state.progress, stage: state.stage }),
+        );
+
+        if (finished.status === 'complete') {
+          setStemStatus({ kind: 'ready', job: finished });
+          setMixerOpen(true);
+          toast(`Separated “${target.title}” into ${finished.stems.length} stems.`, {
+            kind: 'success',
+          });
+        } else {
+          setStemStatus({ kind: 'none' });
+          toast(`Separation failed: ${finished.error ?? 'unknown error'}`, { kind: 'error' });
+        }
+      } catch (error) {
+        setStemStatus({ kind: 'none' });
+        toast(error instanceof Error ? error.message : String(error), { kind: 'error' });
+      }
+    },
+    [toast],
+  );
+
+  const toggleMixer = useCallback(() => {
+    setMixerOpen((current) => {
+      const next = !current;
+      // Opening the mixer starts its own playback; pause the main player so
+      // the original mix and the stem mix don't sound at once.
+      if (next && status === 'playing') void playerActions.toggle();
+      return next;
+    });
+  }, [status]);
 
   // Lyrics are fetched only while the panel is open and only for tracks that
   // have them — no speculative reads (spec §4).
@@ -147,7 +245,20 @@ export function NowPlaying() {
                 <Chip tone={track.lossless ? 'accent' : 'neutral'}>{track.format}</Chip>
                 <span className="text-2xs text-subtle">{formatQuality(track)}</span>
               </div>
+
+              <StemStatusRow
+                status={stemStatus}
+                mixerOpen={mixerOpen}
+                onProcess={() => void processStems(track)}
+                onToggleMixer={toggleMixer}
+              />
             </>
+          )}
+
+          {stemStatus.kind === 'ready' && mixerOpen && (
+            <div className="mt-4 max-h-[45vh] overflow-y-auto">
+              <StemMixer job={stemStatus.job} />
+            </div>
           )}
 
           <NowPlayingSeek durationMs={track.durationMs} />
@@ -230,6 +341,61 @@ export function NowPlaying() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Whether this track has stems yet, or a way to make some. */
+function StemStatusRow({
+  status,
+  mixerOpen,
+  onProcess,
+  onToggleMixer,
+}: {
+  status: StemStatus;
+  mixerOpen: boolean;
+  onProcess(): void;
+  onToggleMixer(): void;
+}) {
+  if (status.kind === 'idle' || status.kind === 'unavailable') return null;
+
+  if (status.kind === 'processing') {
+    return (
+      <div className="mt-3 flex items-center gap-1.5 text-2xs text-muted">
+        <Spinner size={12} />
+        <span>{status.stage}…</span>
+        <span className="tabular-nums">{Math.round(status.progress)}%</span>
+      </div>
+    );
+  }
+
+  if (status.kind === 'ready') {
+    return (
+      <button
+        type="button"
+        onClick={onToggleMixer}
+        aria-expanded={mixerOpen}
+        title={mixerOpen ? 'Hide the stem mixer' : 'Mix vocals, drums, bass and more'}
+        className="mt-3 flex flex-wrap items-center gap-1.5 self-start"
+      >
+        {status.job.stems.map((stem) => (
+          <Chip key={stem.name} tone="accent">
+            {stem.name}
+          </Chip>
+        ))}
+        {mixerOpen ? (
+          <ChevronUp className="h-3.5 w-3.5 text-subtle" />
+        ) : (
+          <ChevronDown className="h-3.5 w-3.5 text-subtle" />
+        )}
+      </button>
+    );
+  }
+
+  return (
+    <Button size="sm" variant="secondary" className="mt-3 self-start" onClick={onProcess}>
+      <Scissors className="h-3.5 w-3.5" />
+      Split into stems
+    </Button>
   );
 }
 
