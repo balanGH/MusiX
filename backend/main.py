@@ -142,7 +142,7 @@ def find_reusable_job(source_hash: str, needed_stems: list[str]) -> Job | None:
         available = {stem.name for stem in job.stems}
         if not needed.issubset(available):
             continue
-        if all((config.OUTPUT_DIR / job.jobId / f"{name}.wav").is_file() for name in needed):
+        if all((config.OUTPUT_DIR / job.jobId / f"{name}.mp3").is_file() for name in needed):
             return job
     return None
 
@@ -332,14 +332,14 @@ async def download_stem(job_id: str, stem: str) -> FileResponse:
         available = ", ".join(info.name for info in job.stems) or "none"
         raise HTTPException(404, f"No “{stem}” stem in this job. Available: {available}.")
 
-    path = config.OUTPUT_DIR / job_id / f"{stem}.wav"
+    path = config.OUTPUT_DIR / job_id / f"{stem}.mp3"
     if not path.is_file():
         raise HTTPException(410, "That stem file has been removed from disk.")
 
     return FileResponse(
         path,
-        media_type="audio/wav",
-        filename=f"{job.sourceName} - {stem}.wav",
+        media_type="audio/mpeg",
+        filename=f"{job.sourceName} - {stem}.mp3",
         # Lets the browser seek within the stem while the mixer plays it.
         headers={"Accept-Ranges": "bytes"},
     )

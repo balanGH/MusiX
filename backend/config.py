@@ -63,6 +63,12 @@ SIX_STEM_MODEL = "htdemucs_6s"
 FOUR_STEMS = ["vocals", "drums", "bass", "other"]
 SIX_STEMS = ["vocals", "drums", "bass", "guitar", "piano", "other"]
 
+# Demucs writes stems as uncompressed WAV — a full-length 44.1kHz/16-bit/stereo
+# file per stem, so a 4 MB source MP3 becomes four or six ~35 MB files. Each
+# stem is transcoded to MP3 right after separation so what lands on disk (and
+# gets served/downloaded) is close to the original's size instead of ~10x it.
+STEM_BITRATE = os.environ.get("MUSIX_STEM_BITRATE", "192k")
+
 # --------------------------------------------------------------------------
 # Server
 # --------------------------------------------------------------------------

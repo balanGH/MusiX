@@ -82,6 +82,37 @@ async def convert_to_wav(source: Path, destination: Path) -> Path:
     return destination
 
 
+async def encode_stem(source_wav: Path, destination_mp3: Path) -> None:
+    """Transcode one separated stem from WAV to MP3.
+
+    Demucs' output is uncompressed WAV; left as-is, a handful of full-length
+    stems would each be roughly 10x the size of a typical compressed source
+    file. MP3 at a fixed bitrate keeps them close to the original's size and
+    is more than good enough for listening and remixing.
+    """
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source_wav),
+        "-codec:a",
+        "libmp3lame",
+        "-b:a",
+        config.STEM_BITRATE,
+        "-y",
+        str(destination_mp3),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await process.communicate()
+
+    if process.returncode != 0 or not destination_mp3.exists():
+        detail = stderr.decode("utf-8", "replace").strip()[:400]
+        raise ProcessingError(f"Could not encode the “{source_wav.stem}” stem. {detail}")
+
+
 async def separate(
     source_wav: Path,
     job_id: str,
@@ -172,17 +203,21 @@ async def separate(
     if not separated_dir.exists():
         raise ProcessingError("Demucs produced no output directory.")
 
-    stems: dict[str, Path] = {}
-    for name in produced:
-        candidate = separated_dir / f"{name}.wav"
-        if not candidate.exists():
-            continue
-        destination = output_root / f"{name}.wav"
-        shutil.move(str(candidate), str(destination))
-        stems[name] = destination
-
-    if not stems:
+    candidates = [
+        (name, separated_dir / f"{name}.wav")
+        for name in produced
+        if (separated_dir / f"{name}.wav").exists()
+    ]
+    if not candidates:
         raise ProcessingError("Demucs finished but produced no stems.")
+
+    on_progress(97, "Encoding stems")
+    stems: dict[str, Path] = {}
+    for index, (name, candidate) in enumerate(candidates):
+        destination = output_root / f"{name}.mp3"
+        await encode_stem(candidate, destination)
+        stems[name] = destination
+        on_progress(97 + (index + 1) / len(candidates) * 3, "Encoding stems")
 
     # Remove the nested working directory, keeping only the flat stem files.
     shutil.rmtree(output_root / model, ignore_errors=True)

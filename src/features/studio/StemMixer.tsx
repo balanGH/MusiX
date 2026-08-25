@@ -338,7 +338,7 @@ export function StemMixer({ job }: { job: JobState }) {
 
               <a
                 href={stemUrl(job.jobId, name)}
-                download={`${job.sourceName} - ${name}.wav`}
+                download={`${job.sourceName} - ${name}.mp3`}
                 aria-label={`Download the ${name} stem`}
                 title={`Download the ${name} stem`}
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted transition hover:bg-surface-hover hover:text-text"
