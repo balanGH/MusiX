@@ -241,6 +241,38 @@ body {
   opacity: 1;
 }
 
+/* A vertical range input (EQ bands): `writing-mode` rotates the input's own
+   box and its drag axis, but `width`/`height` and the fill gradient on the
+   track/thumb pseudo-elements are physical properties — the browser does not
+   rotate those for you, so they have to be swapped by hand or the track and
+   thumb keep rendering (and filling) as if the slider were horizontal. */
+.mx-range-vertical::-webkit-slider-runnable-track {
+  width: 4px;
+  height: 100%;
+  background: linear-gradient(
+    to top,
+    rgb(var(--mx-accent)) 0%,
+    rgb(var(--mx-accent)) var(--mx-fill, 0%),
+    rgb(var(--mx-line-strong)) var(--mx-fill, 0%),
+    rgb(var(--mx-line-strong)) 100%
+  );
+}
+
+.mx-range-vertical::-webkit-slider-thumb {
+  margin-top: 0;
+  margin-left: -4px;
+}
+
+.mx-range-vertical::-moz-range-track {
+  width: 4px;
+  height: 100%;
+  background: rgb(var(--mx-line-strong));
+}
+
+.mx-range-vertical::-moz-range-progress {
+  width: 4px;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Utilities                                                                  */
 /* ------------------------------------------------------------------------- */

@@ -218,17 +218,33 @@ export function NowPlaying() {
               <h1 className="text-2xl font-semibold leading-tight tracking-tight text-text">
                 {track.title}
               </h1>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!track.artistIds[0]) return;
-                  setOpen(false);
-                  navigate(`/artists/${track.artistIds[0]}`);
-                }}
-                className="mt-1 self-start text-base text-muted hover:text-text hover:underline"
-              >
-                {track.artist}
-              </button>
+              {/* One link per credited artist — `track.artist` is just the
+                  joined display string, so a single button here would send
+                  every artist's name to whichever one happens to be first. */}
+              <div className="mt-1 flex flex-wrap gap-x-1 self-start text-base text-muted">
+                {track.artists.map((name, index) => {
+                  const artistId = track.artistIds[index];
+                  return (
+                    <span key={index} className="contents">
+                      {index > 0 && <span aria-hidden="true">/</span>}
+                      {artistId ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOpen(false);
+                            navigate(`/artists/${artistId}`);
+                          }}
+                          className="hover:text-text hover:underline"
+                        >
+                          {name}
+                        </button>
+                      ) : (
+                        name
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
               <button
                 type="button"
                 onClick={() => {

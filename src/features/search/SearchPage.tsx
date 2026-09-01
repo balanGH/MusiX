@@ -199,24 +199,21 @@ export function SearchPage() {
     </div>
   );
 
-  if (hasQuery && searching && !hasResults) {
-    return (
-      <div className="flex flex-1 flex-col">
-        {header}
-        <div className="flex flex-1 items-center justify-center">
-          <Spinner size={20} />
-        </div>
-      </div>
-    );
-  }
-
   return (
     <TrackList
       ids={trackIds}
       ariaLabel="Search results"
       header={header}
+      // A separate early `return` here (spinner vs. results) would swap the whole
+      // tree — including `header`, which holds the focused input — forcing React
+      // to remount it and drop focus mid-keystroke. Folding the spinner into
+      // `emptyState` keeps `header` mounted in the same place throughout.
       emptyState={
-        hasQuery ? (
+        hasQuery && searching && !hasResults ? (
+          <div className="flex flex-1 items-center justify-center py-16">
+            <Spinner size={20} />
+          </div>
+        ) : hasQuery ? (
           <EmptyState
             icon={<SearchIcon className="h-8 w-8" />}
             title={`Nothing matches “${query.trim()}”`}
