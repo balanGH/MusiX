@@ -9,6 +9,8 @@ import {
 } from './onlineDownloader';
 
 import { useLibrary } from '@state/libraryStore';
+import { useSettings } from '@state/settingsStore';
+import { useUi } from '@state/uiStore';
 import { Button } from '@ui/primitives';
 
 interface Props {
@@ -17,6 +19,8 @@ interface Props {
 
 export function OnlineResults({ results }: Props) {
   const importDownloadedFile = useLibrary((state) => state.importDownloadedFile);
+  const wantLyrics = useSettings((state) => state.onlineLyrics);
+  const toast = useUi((state) => state.toast);
 
   const [downloading, setDownloading] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
@@ -30,7 +34,7 @@ export function OnlineResults({ results }: Props) {
       setDownloading(song.id);
       setProgress(0);
 
-      const { jobId } = await startOnlineDownload(song.url);
+      const { jobId } = await startOnlineDownload(song.url, { lyrics: wantLyrics });
 
       let status = await getOnlineDownloadStatus(jobId);
       while (status.status !== 'complete') {
@@ -54,10 +58,19 @@ export function OnlineResults({ results }: Props) {
       if (!result.added) {
         throw new Error(result.message || 'Could not add the download to your library.');
       }
-    } catch (error) {
-      console.error('Online download failed:', error);
 
-      alert(error instanceof Error ? error.message : 'Download failed.');
+      toast(
+        status.lyrics === 'synced'
+          ? `Added “${status.title ?? song.title}” with synced lyrics.`
+          : status.lyrics === 'plain'
+            ? `Added “${status.title ?? song.title}” with lyrics.`
+            : `Added “${status.title ?? song.title}” to your library.`,
+        { kind: 'success' },
+      );
+    } catch (error) {
+      // A toast, not `alert()`: it matches the rest of the app and does not
+      // block the page while a second download is running.
+      toast(error instanceof Error ? error.message : 'Download failed.', { kind: 'error' });
     } finally {
       setDownloading(null);
       setProgress(0);

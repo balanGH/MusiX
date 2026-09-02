@@ -236,11 +236,10 @@ export function SettingsPage() {
             disabled
           />
           <Toggle
-            label="Online lyrics"
-            description="Arrives in Phase 3. Embedded lyrics already work offline."
+            label="Online lyrics for downloads"
+            description="Looks up lyrics from LRCLIB when you download a song, and embeds them in the file — synced ones scroll with playback in Now Playing. Lyrics already inside your own files always work offline, with or without this."
             checked={settings.onlineLyrics}
             onChange={(checked) => settings.patch({ onlineLyrics: checked })}
-            disabled
           />
         </Section>
 

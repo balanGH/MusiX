@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { parseAudioFile, isSupportedAudioFile } from '@core/metadata';
+import { looksLikeLrc, lyricsFromTag } from '@core/lyrics/lrc';
 import { parseFrameHeader } from '@core/metadata/mpeg';
 import {
   MP3_FRAME_LENGTH,
@@ -21,6 +22,7 @@ import {
   textFrame,
   toBlob,
   txxxFrame,
+  usltFrame,
   utf16Frame,
 } from './fixtures';
 
@@ -176,6 +178,54 @@ describe('ID3v2', () => {
 
     const parsed = await parseAudioFile(toBlob(concat(tag, mp3Frames(4))), 'x.mp3');
     expect(parsed.tags.title).toBe('Sloppy Tagger');
+  });
+});
+
+describe('embedded lyrics', () => {
+  it('reads a USLT frame', async () => {
+    const bytes = concat(
+      buildId3v2([usltFrame('first line\nsecond line\nthird line')]),
+      mp3Frames(4),
+    );
+    const parsed = await parseAudioFile(toBlob(bytes), 'x.mp3');
+
+    expect(parsed.tags.lyrics).toContain('second line');
+  });
+
+  it('carries timestamps through so they can be synchronised', async () => {
+    // What a downloaded track holds: LRC text inside an ordinary lyrics frame.
+    // The player detects the timestamps rather than needing a separate format.
+    const lrc = '[00:12.50]one\n[00:15.00]two\n[01:03.25]three';
+    const bytes = concat(buildId3v2([usltFrame(lrc)]), mp3Frames(4));
+    const parsed = await parseAudioFile(toBlob(bytes), 'x.mp3');
+
+    expect(parsed.tags.lyrics).toBe(lrc);
+    expect(looksLikeLrc(parsed.tags.lyrics!)).toBe(true);
+
+    // End to end: tag bytes -> stored record the Now Playing view renders.
+    const stored = lyricsFromTag('track-1', parsed.tags.lyrics!);
+    expect(stored.kind).toBe('lrc');
+    expect(stored.lines).toHaveLength(3);
+    expect(stored.lines![0]!.timeMs).toBe(12_500);
+  });
+
+  it('keeps untimed lyrics as plain text', async () => {
+    const bytes = concat(buildId3v2([usltFrame('just words\nno timings')]), mp3Frames(4));
+    const parsed = await parseAudioFile(toBlob(bytes), 'x.mp3');
+
+    const stored = lyricsFromTag('track-2', parsed.tags.lyrics!);
+    expect(stored.kind).toBe('plain');
+    expect(stored.lines).toBeNull();
+  });
+
+  it('does not mistake an iTunes comment for lyrics', async () => {
+    // iTunes writes its own normalisation data as a comment; it must not end
+    // up in either the comment or the lyrics field.
+    const bytes = concat(buildId3v2([usltFrame('[00:01.00]a\n[00:02.00]b')]), mp3Frames(4));
+    const parsed = await parseAudioFile(toBlob(bytes), 'x.mp3');
+
+    expect(parsed.tags.comment).toBeUndefined();
+    expect(parsed.tags.lyrics).toBeDefined();
   });
 });
 

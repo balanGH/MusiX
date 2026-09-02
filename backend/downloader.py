@@ -47,6 +47,7 @@ from typing import Any
 import yt_dlp
 
 import config
+import lyrics
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +324,7 @@ class _WriteMusicTags(yt_dlp.postprocessor.PostProcessor):
 # ---------------------------------------------------------------------------
 
 
-def _download_song(job_id: str, url: str) -> None:
+def _download_song(job_id: str, url: str, want_lyrics: bool = True) -> None:
     jobs[job_id] = {
         "status": "starting",
         "progress": 0,
@@ -332,6 +333,8 @@ def _download_song(job_id: str, url: str) -> None:
         "album": None,
         "filename": None,
         "thumbnail": None,
+        # "synced", "plain" or None once the download finishes.
+        "lyrics": None,
         "error": None,
     }
 
@@ -397,6 +400,19 @@ def _download_song(job_id: str, url: str) -> None:
 
             final_path = _rename_to_display_name(downloaded, title, artists)
 
+            # Lyrics last: the download is already usable without them, so a
+            # slow or unavailable lyrics service must not hold up the result.
+            lyrics_kind = None
+            if want_lyrics:
+                jobs[job_id]["status"] = "fetching lyrics"
+                lyrics_kind = _attach_lyrics(
+                    final_path,
+                    title,
+                    artists,
+                    info.get("album"),
+                    info.get("duration"),
+                )
+
             jobs[job_id] = {
                 "status": "complete",
                 "progress": 100,
@@ -405,6 +421,7 @@ def _download_song(job_id: str, url: str) -> None:
                 "album": info.get("album") or "",
                 "filename": str(final_path),
                 "thumbnail": _best_thumbnail(info),
+                "lyrics": lyrics_kind,
                 "error": None,
             }
 
@@ -417,8 +434,32 @@ def _download_song(job_id: str, url: str) -> None:
             "album": None,
             "filename": None,
             "thumbnail": None,
+            "lyrics": None,
             "error": str(error),
         }
+
+
+def _attach_lyrics(
+    path: Path,
+    title: str,
+    artists: list[str],
+    album: str | None,
+    duration: float | None,
+) -> str | None:
+    """Look up and embed lyrics. Returns "synced", "plain", or None.
+
+    Wrapped so that any failure — the service being down, a track nobody has
+    transcribed, mutagen missing — leaves a perfectly good download alone.
+    """
+    try:
+        found = lyrics.fetch(title, artists, album, duration)
+        if not found:
+            return None
+        if not lyrics.embed(path, found):
+            return None
+        return "synced" if found.synced else "plain"
+    except Exception:
+        return None
 
 
 def _rename_to_display_name(path: Path, title: str, artists: list[str]) -> Path:
@@ -443,12 +484,12 @@ def _rename_to_display_name(path: Path, title: str, artists: list[str]) -> Path:
         return path
 
 
-def start_download(url: str) -> str:
+def start_download(url: str, want_lyrics: bool = True) -> str:
     job_id = uuid.uuid4().hex
 
     thread = threading.Thread(
         target=_download_song,
-        args=(job_id, url),
+        args=(job_id, url, want_lyrics),
         daemon=True,
     )
     thread.start()

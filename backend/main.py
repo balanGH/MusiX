@@ -264,7 +264,12 @@ async def online_download(payload: dict) -> dict[str, str]:
             "Missing URL.",
         )
 
-    job_id = downloader.start_download(url)
+    # Lyrics are looked up from an online service, so the client's privacy
+    # setting decides (spec §32). Defaults to on: the user is already
+    # downloading from the internet at this point.
+    want_lyrics = payload.get("lyrics", True) is not False
+
+    job_id = downloader.start_download(url, want_lyrics)
 
     return {
         "jobId": job_id,

@@ -71,8 +71,12 @@ code in this repository that uploads anything.
 
 Your music, tags, artwork, lyrics, playlists, ratings and listening history are
 stored only in your browser's local database, on your device. The optional
-online-lookup switches in Settings are **off by default** and, in this release,
-are not yet wired to anything — they are shown so the default is visible.
+online-lookup switches in Settings are **off by default**, with one exception:
+lyrics lookup for downloads is on, because it only runs inside an action you
+started — downloading a track from the internet — rather than reaching out on
+its own. Turn it off in Settings and downloads simply arrive without lyrics.
+The metadata and artwork switches are shown but not yet wired to anything, so
+the default they describe is visible.
 
 The one component that touches a network is the audio-studio service, and it
 runs on `127.0.0.1`, on your own machine.

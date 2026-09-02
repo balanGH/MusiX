@@ -24,6 +24,11 @@ export interface DownloadJob {
     album?: string;
     filename?: string;
     thumbnail?: string;
+    /**
+     * What was embedded. 'synced' means timestamped lyrics that scroll with
+     * playback; 'plain' means text only; null means none were found.
+     */
+    lyrics?: 'synced' | 'plain' | null;
     error?: string | null;
 }
 
@@ -49,6 +54,7 @@ export async function searchOnline(
 
 export async function startOnlineDownload(
     url: string,
+    options: { lyrics?: boolean } = {},
 ): Promise<{ jobId: string }> {
 
     const response = await fetch(
@@ -62,6 +68,9 @@ export async function startOnlineDownload(
 
             body: JSON.stringify({
                 url,
+                // Looking lyrics up contacts a third party, so the user's
+                // privacy setting decides (spec §32).
+                lyrics: options.lyrics ?? true,
             }),
         },
     );

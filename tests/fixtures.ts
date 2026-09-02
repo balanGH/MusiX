@@ -86,6 +86,25 @@ export function txxxFrame(description: string, value: string): Id3Frame {
   };
 }
 
+/**
+ * A `USLT` unsynchronised-lyrics frame.
+ *
+ * Layout: encoding byte, a 3-byte language code, a terminated description,
+ * then the text. It is the frame every tagger writes lyrics into, and the one
+ * downloads carry.
+ */
+export function usltFrame(text: string, language = 'eng'): Id3Frame {
+  return {
+    id: 'USLT',
+    body: concat(
+      new Uint8Array([0x03]), // UTF-8
+      ascii(language),
+      new Uint8Array([0x00]), // empty description, terminated
+      new TextEncoder().encode(text),
+    ),
+  };
+}
+
 /** An `APIC` picture frame carrying a minimal PNG-like payload. */
 export function apicFrame(mime: string, pictureType: number, size = 256): Id3Frame {
   const payload = new Uint8Array(size);

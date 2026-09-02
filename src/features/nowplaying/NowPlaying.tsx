@@ -21,12 +21,14 @@ import {
   Repeat,
   Repeat1,
   Scissors,
+  Search as SearchIcon,
   Shuffle,
   SkipBack,
   SkipForward,
   SlidersHorizontal,
 } from 'lucide-react';
 import { getLyrics } from '@core/db/repositories/lyrics';
+import { fetchAndStoreLyrics } from '@core/lyrics/online';
 import { setFavorite } from '@core/db/repositories/tracks';
 import { openTrackFile } from '@core/platform';
 import {
@@ -41,6 +43,7 @@ import {
 import { formatDuration, formatQuality } from '@core/utils';
 import { useArtwork } from '@state/artworkCache';
 import { playerActions, usePlayer, usePlayerPosition } from '@state/playerStore';
+import { useSettings } from '@state/settingsStore';
 import { useUi } from '@state/uiStore';
 import type { Lyrics, Track } from '@core/types';
 import { Artwork } from '@ui/Artwork';
@@ -64,10 +67,12 @@ export function NowPlaying() {
   const shuffle = usePlayer((state) => state.queue.shuffle);
   const repeat = usePlayer((state) => state.queue.repeat);
   const toast = useUi((state) => state.toast);
+  const onlineLyricsEnabled = useSettings((state) => state.onlineLyrics);
   const navigate = useNavigate();
 
   const [lyrics, setLyrics] = useState<Lyrics | null>(null);
   const [showLyrics, setShowLyrics] = useState(false);
+  const [findingLyrics, setFindingLyrics] = useState(false);
   const [stemStatus, setStemStatus] = useState<StemStatus>({ kind: 'idle' });
   const [mixerOpen, setMixerOpen] = useState(false);
   const { dominant } = useArtwork(track?.artworkId ?? null, false);
@@ -163,10 +168,39 @@ export function NowPlaying() {
     };
   }, [open, track?.id, track?.hasLyrics]);
 
+  /**
+   * Look this track up on the lyrics service.
+   *
+   * Only ever reached from a click, and only when the user has left online
+   * lyrics on (spec §32). Everything already in the file works offline.
+   */
+  const findLyricsNow = useCallback(async () => {
+    if (!track) return;
+    setFindingLyrics(true);
+    try {
+      const found = await fetchAndStoreLyrics(track);
+      if (!found) {
+        toast(`No lyrics found for “${track.title}”.`, { kind: 'warn' });
+        return;
+      }
+      setLyrics(found);
+      setShowLyrics(true);
+      toast(found.kind === 'lrc' ? 'Found synced lyrics.' : 'Found lyrics.', { kind: 'success' });
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Lyrics lookup failed.', { kind: 'error' });
+    } finally {
+      setFindingLyrics(false);
+    }
+  }, [track, toast]);
+
   if (!open || !track) return null;
 
   const playing = status === 'playing';
   const backdrop = dominant ?? '90 90 110';
+  // `lyrics` covers the case where they were just fetched: the player store's
+  // copy of the track still says `hasLyrics: false` until it refreshes.
+  const hasLyrics = track.hasLyrics || lyrics !== null;
+  const canFindLyrics = onlineLyricsEnabled;
 
   return (
     <div
@@ -336,14 +370,39 @@ export function NowPlaying() {
             </IconButton>
 
             <IconButton
-              label={showLyrics ? 'Hide lyrics' : 'Show lyrics'}
+              label={
+                hasLyrics
+                  ? showLyrics
+                    ? 'Hide lyrics'
+                    : 'Show lyrics'
+                  : findingLyrics
+                    ? 'Looking for lyrics'
+                    : 'Find lyrics online'
+              }
               size={38}
               active={showLyrics}
-              disabled={!track.hasLyrics}
-              title={track.hasLyrics ? undefined : 'This file has no embedded lyrics'}
-              onClick={() => setShowLyrics((value) => !value)}
+              disabled={findingLyrics || (!hasLyrics && !canFindLyrics)}
+              title={
+                hasLyrics
+                  ? undefined
+                  : canFindLyrics
+                    ? 'This track has no lyrics — look for them online'
+                    : 'No lyrics in this file. Turn on online lyrics in Settings to look for them.'
+              }
+              onClick={() => {
+                // With no lyrics yet, the button's job is to go and find them
+                // rather than to toggle a panel that has nothing in it.
+                if (hasLyrics) setShowLyrics((value) => !value);
+                else void findLyricsNow();
+              }}
             >
-              <Mic2 className="h-[18px] w-[18px]" />
+              {findingLyrics ? (
+                <Spinner size={16} />
+              ) : hasLyrics ? (
+                <Mic2 className="h-[18px] w-[18px]" />
+              ) : (
+                <SearchIcon className="h-[18px] w-[18px]" />
+              )}
             </IconButton>
 
             <IconButton

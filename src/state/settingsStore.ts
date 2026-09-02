@@ -47,9 +47,17 @@ export interface SettingsState {
   eqPreampDb: number;
   eqPreset: EqPresetName | 'Custom';
 
-  // ---- Privacy (spec §32) — all off by default ----
+  // ---- Privacy (spec §32) ----
   onlineMetadata: boolean;
   onlineArtwork: boolean;
+  /**
+   * Look lyrics up when downloading a song.
+   *
+   * The one online switch that defaults on, because it only ever runs inside an
+   * action the user explicitly started — downloading a track from the internet
+   * — rather than reaching out on its own. Lyrics already embedded in the
+   * user's own files are read offline regardless of this.
+   */
   onlineLyrics: boolean;
 
   // ---- Library ----
@@ -97,7 +105,7 @@ export const useSettings = create<SettingsState>()(
 
       onlineMetadata: false,
       onlineArtwork: false,
-      onlineLyrics: false,
+      onlineLyrics: true,
 
       scanOnLaunch: false,
 

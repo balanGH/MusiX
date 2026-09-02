@@ -298,6 +298,16 @@ export async function recordPlay(
   });
 }
 
+/**
+ * Record that a track now has lyrics stored against it.
+ *
+ * Kept separate from the lyrics store itself so the flag a list row reads is a
+ * field on the track, not a second lookup per row.
+ */
+export async function setHasLyrics(trackId: string, hasLyrics: boolean): Promise<Track | undefined> {
+  return patchTrack(trackId, (track) => ({ ...track, hasLyrics }));
+}
+
 /** A skip is worth knowing about but is not a play. */
 export async function recordSkip(trackId: string): Promise<void> {
   await patchTrack(trackId, (track) => ({ ...track, skipCount: track.skipCount + 1 }));
