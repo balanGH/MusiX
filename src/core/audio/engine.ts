@@ -119,10 +119,17 @@ export class AudioEngine {
       (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!Ctor) throw new Error('This browser has no Web Audio support.');
 
-    // `latencyHint: 'playback'` lets the browser pick a larger buffer, which
-    // means fewer wakeups per second and measurably less battery drain than the
-    // default interactive setting (spec §36).
-    const context = new Ctor({ latencyHint: 'playback' });
+    // `latencyHint` is a genuine trade-off, and 'playback' was the wrong side
+    // of it. It asks for a large output buffer — fewer wakeups and less battery
+    // drain (spec §36), but a couple of hundred milliseconds of already-buffered
+    // audio keeps playing after the element is paused. Pressing pause and
+    // hearing it a beat later makes the whole player feel broken.
+    //
+    // 'interactive' keeps the buffer small so transport controls respond
+    // immediately. The battery saving that actually matters comes from
+    // suspending the context when idle (see `scheduleIdleSuspend`), which is
+    // unaffected by this.
+    const context = new Ctor({ latencyHint: 'interactive' });
 
     const master = context.createGain();
     master.gain.value = this.muted ? 0 : sliderToGain(this.volume);

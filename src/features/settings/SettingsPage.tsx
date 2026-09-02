@@ -29,6 +29,7 @@ import { useUi } from '@state/uiStore';
 import { pruneOrphanArtwork } from '@core/db/repositories/artwork';
 import { clearHistory, countHistory } from '@core/db/repositories/history';
 import { SHORTCUTS } from '@app/useKeyboardShortcuts';
+import { DownloadFolderSection } from './DownloadFolderSection';
 import { Button, Select, Toggle, cx } from '@ui/primitives';
 import { PageHeader } from '@ui/PageHeader';
 
@@ -208,6 +209,9 @@ export function SettingsPage() {
             </ul>
           )}
         </Section>
+
+        {/* ---- Download folder (only when the studio service is running) ---- */}
+        <DownloadFolderSection />
 
         {/* ---- Privacy ---- */}
         <Section icon={<ShieldCheck className="h-4 w-4" />} title="Privacy">

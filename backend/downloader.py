@@ -46,15 +46,16 @@ from typing import Any
 
 import yt_dlp
 
+import config
+
 
 # ---------------------------------------------------------------------------
 # Storage
 # ---------------------------------------------------------------------------
-
-BACKEND_DIR = Path(__file__).resolve().parent
-
-DOWNLOAD_DIR = BACKEND_DIR / "storage" / "downloads"
-DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+#
+# The destination is resolved per download through `config.download_dir()`
+# rather than held in a module constant, so a folder chosen in Settings applies
+# to the next download instead of needing a restart.
 
 
 # ---------------------------------------------------------------------------
@@ -347,11 +348,15 @@ def _download_song(job_id: str, url: str) -> None:
             jobs[job_id]["status"] = "processing"
             jobs[job_id]["progress"] = 100
 
+    # Resolved once per download, so a folder chosen in Settings takes effect
+    # immediately and a whole job stays in one place even if it changes midway.
+    destination = config.download_dir()
+
     options = {
         "format": "bestaudio/best",
         # Downloaded under the video id, then renamed once the real title is
         # known — a template cannot express the reference naming reliably.
-        "outtmpl": str(DOWNLOAD_DIR / "%(id)s.%(ext)s"),
+        "outtmpl": str(destination / "%(id)s.%(ext)s"),
         "writethumbnail": True,
         "postprocessors": [
             {
@@ -385,7 +390,7 @@ def _download_song(job_id: str, url: str) -> None:
             info = ydl.extract_info(url, download=True)
 
             video_id = str(info.get("id") or "")
-            downloaded = DOWNLOAD_DIR / f"{video_id}.mp3"
+            downloaded = destination / f"{video_id}.mp3"
 
             title = _clean_title(info)
             artists = _artist_list(info)

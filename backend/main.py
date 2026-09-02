@@ -35,6 +35,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 import audio_processor
 import config
@@ -211,6 +212,45 @@ async def online_search(q: str = "") -> list[dict]:
             500,
             f"Online search failed: {error}",
         ) from error
+
+
+@app.get("/api/online/download-path")
+async def get_download_path() -> dict[str, object]:
+    """Where downloads are written, and whether the user may change it."""
+    current = config.download_dir()
+    return {
+        "path": str(current),
+        "default": str(config.DEFAULT_DOWNLOAD_DIR),
+        "isDefault": current == config.DEFAULT_DOWNLOAD_DIR,
+        # Pinned by MUSIX_DOWNLOAD_DIR; the UI hides the control when set.
+        "fixed": config.download_dir_is_fixed(),
+    }
+
+
+class DownloadPathRequest(BaseModel):
+    """An absolute folder path on this machine.
+
+    A model rather than a bare dict so an empty or malformed body is rejected
+    with a clear 422 instead of reaching the filesystem code.
+    """
+
+    path: str
+
+
+@app.post("/api/online/download-path")
+async def set_download_path(request: DownloadPathRequest) -> dict[str, object]:
+    """Choose a different download folder.
+
+    The folder is created and write-tested before being accepted, so a bad
+    choice fails here with a reason rather than silently breaking every
+    later download.
+    """
+    try:
+        chosen = config.set_download_dir(request.path)
+    except config.DownloadDirError as error:
+        raise HTTPException(400, str(error)) from error
+
+    return {"path": str(chosen), "isDefault": chosen == config.DEFAULT_DOWNLOAD_DIR}
 
 
 @app.post("/api/online/download")

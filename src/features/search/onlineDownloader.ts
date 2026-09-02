@@ -94,6 +94,70 @@ export async function getOnlineDownloadStatus(
 }
 
 
+export interface DownloadPath {
+    /** Absolute folder on the machine running the service. */
+    path: string;
+    /** The built-in default, shown so the user can get back to it. */
+    default?: string;
+    isDefault: boolean;
+    /** Pinned by MUSIX_DOWNLOAD_DIR; the UI must not offer to change it. */
+    fixed?: boolean;
+}
+
+export async function getDownloadPath(): Promise<DownloadPath> {
+
+    const response = await fetch(
+        `${API_BASE}/api/online/download-path`,
+    );
+
+    if (!response.ok) {
+        throw new Error(
+            `Could not read the download folder (${response.status})`,
+        );
+    }
+
+    return response.json();
+}
+
+
+/**
+ * Choose a different download folder.
+ *
+ * The service creates and write-tests the folder before accepting it, so a
+ * rejection here carries a reason worth showing the user verbatim.
+ */
+export async function setDownloadPath(
+    path: string,
+): Promise<DownloadPath> {
+
+    const response = await fetch(
+        `${API_BASE}/api/online/download-path`,
+        {
+            method: 'POST',
+
+            headers: {
+                'Content-Type': 'application/json',
+            },
+
+            body: JSON.stringify({ path }),
+        },
+    );
+
+    if (!response.ok) {
+        let detail = `Could not set the download folder (${response.status})`;
+        try {
+            const body = (await response.json()) as { detail?: string };
+            if (body.detail) detail = body.detail;
+        } catch {
+            // Not JSON; the status line is the best message available.
+        }
+        throw new Error(detail);
+    }
+
+    return response.json();
+}
+
+
 /** Fetch the finished MP3 for a completed job, ready to hand to the library importer. */
 export async function getOnlineDownloadFile(
     jobId: string,
