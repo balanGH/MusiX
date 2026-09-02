@@ -38,6 +38,7 @@ from fastapi.responses import FileResponse
 
 import audio_processor
 import config
+import downloader
 
 app = FastAPI(title="MusiX Audio Studio", version="1.0.0")
 
@@ -178,6 +179,103 @@ async def health() -> dict[str, object]:
         "availableStems": config.SIX_STEMS,
         "ffmpeg": config.ffmpeg_available(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Online music search / download
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/online/search")
+async def online_search(q: str = "") -> list[dict]:
+    """
+    Search YouTube Music through yt-dlp.
+    """
+
+    query = q.strip()
+
+    if not query:
+        return []
+
+    try:
+
+        return await asyncio.to_thread(
+            downloader.search_online,
+            query,
+            5,
+        )
+
+    except Exception as error:
+
+        raise HTTPException(
+            500,
+            f"Online search failed: {error}",
+        ) from error
+
+
+@app.post("/api/online/download")
+async def online_download(payload: dict) -> dict[str, str]:
+
+    url = payload.get("url")
+
+    if not url:
+        raise HTTPException(
+            400,
+            "Missing URL.",
+        )
+
+    job_id = downloader.start_download(url)
+
+    return {
+        "jobId": job_id,
+    }
+
+
+@app.get("/api/online/download/{job_id}")
+async def online_download_status(
+    job_id: str,
+) -> dict:
+
+    job = downloader.get_job(job_id)
+
+    if job is None:
+
+        raise HTTPException(
+            404,
+            "Download job not found.",
+        )
+
+    return job
+
+
+@app.get("/api/online/download/{job_id}/file")
+async def online_download_file(job_id: str) -> FileResponse:
+    """Serve the finished MP3 so the client can add it to the library.
+
+    The path comes only from the job's own record, never from `job_id`
+    directly, so a crafted job id cannot escape the downloads directory.
+    """
+    job = downloader.get_job(job_id)
+
+    if job is None:
+        raise HTTPException(404, "Download job not found.")
+
+    if job.get("status") != "complete" or not job.get("filename"):
+        raise HTTPException(409, "That download has not finished yet.")
+
+    path = Path(job["filename"])
+    if not path.is_file():
+        raise HTTPException(410, "That download's file has been removed from disk.")
+
+    title = job.get("title") or "track"
+    artist = job.get("artist")
+    display_name = f"{artist} - {title}" if artist else title
+
+    return FileResponse(
+        path,
+        media_type="audio/mpeg",
+        filename=f"{display_name}.mp3",
+    )
 
 
 # ---------------------------------------------------------------------------

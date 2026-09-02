@@ -9,14 +9,37 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search as SearchIcon, X } from 'lucide-react';
-import { EMPTY_RESULTS, searchLibrary, searchSuggestions, type SearchResults } from '@core/search';
+
+import {
+  EMPTY_RESULTS,
+  searchLibrary,
+  searchSuggestions,
+  type SearchResults,
+} from '@core/search';
+
 import { formatCount } from '@core/utils';
 import { useLibrary } from '@state/libraryStore';
 import { playerActions } from '@state/playerStore';
 import { Artwork } from '@ui/Artwork';
-import { Button, EmptyState, IconButton, SectionHeader, Spinner, cx } from '@ui/primitives';
+import {
+  Button,
+  EmptyState,
+  IconButton,
+  SectionHeader,
+  Spinner,
+  cx,
+} from '@ui/primitives';
+
 import { PlayActions } from '@ui/PageHeader';
 import { TrackList } from '@ui/TrackList';
+
+import {
+  searchOnline,
+  type OnlineSong,
+} from './onlineDownloader';
+
+import { OnlineResults } from './OnlineResults';
+
 
 export function SearchPage() {
   const revision = useLibrary((state) => state.revision);
@@ -25,9 +48,22 @@ export function SearchPage() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<SearchResults>(EMPTY_RESULTS);
-  const [searching, setSearching] = useState(false);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
+
+  const [results, setResults] =
+    useState<SearchResults>(EMPTY_RESULTS);
+
+  const [searching, setSearching] =
+    useState(false);
+
+  const [suggestions, setSuggestions] =
+    useState<string[]>([]);
+
+  const [onlineResults, setOnlineResults] =
+    useState<OnlineSong[]>([]);
+
+  const [searchingOnline, setSearchingOnline] =
+    useState(false);
+
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -36,23 +72,79 @@ export function SearchPage() {
 
   // Debounce. The cleanup cancels a pending search when the query changes
   // again, so only the final keystroke does work.
+  // Search local library first.
+  // If nothing is found locally, search online.
   useEffect(() => {
     const trimmed = query.trim();
+
     if (!trimmed) {
       setResults(EMPTY_RESULTS);
+      setOnlineResults([]);
       setSearching(false);
+      setSearchingOnline(false);
       return;
     }
 
     setSearching(true);
+    setSearchingOnline(false);
+    setOnlineResults([]);
+
     let cancelled = false;
+
     const timer = setTimeout(() => {
-      void searchLibrary(trimmed).then((found) => {
-        // A slower earlier search must not overwrite a newer result.
-        if (cancelled) return;
-        setResults(found);
-        setSearching(false);
-      });
+      void searchLibrary(trimmed)
+        .then(async (found) => {
+          if (cancelled) return;
+
+          setResults(found);
+          setSearching(false);
+
+          const hasLocalResults =
+            found.tracks.length > 0 ||
+            found.albums.length > 0 ||
+            found.artists.length > 0 ||
+            found.genres.length > 0;
+
+          // Found something locally.
+          if (hasLocalResults) {
+            return;
+          }
+
+          // Nothing locally — search online.
+          setSearchingOnline(true);
+
+          try {
+            const online = await searchOnline(trimmed);
+
+            if (!cancelled) {
+              setOnlineResults(online);
+            }
+          } catch (error) {
+            console.error(
+              'Online search failed:',
+              error,
+            );
+
+            if (!cancelled) {
+              setOnlineResults([]);
+            }
+          } finally {
+            if (!cancelled) {
+              setSearchingOnline(false);
+            }
+          }
+        })
+        .catch((error) => {
+          if (cancelled) return;
+
+          console.error(
+            'Local search failed:',
+            error,
+          );
+
+          setResults(EMPTY_RESULTS);
+          setSearching(false);
+        });
     }, 120);
 
     return () => {
@@ -106,6 +198,35 @@ export function SearchPage() {
           </IconButton>
         )}
       </div>
+      {hasQuery &&
+        results.tracks.length === 0 &&
+        results.albums.length === 0 &&
+        results.artists.length === 0 &&
+        results.genres.length === 0 && (
+
+          <>
+
+            {searchingOnline && (
+
+              <div className="mt-6 text-sm text-subtle">
+                Searching online…
+              </div>
+
+            )}
+
+            {!searchingOnline &&
+              onlineResults.length > 0 && (
+
+                <OnlineResults
+                  results={onlineResults}
+                />
+
+              )}
+
+          </>
+
+        )}
+
 
       {/* Suggestions before anything is typed */}
       {!hasQuery && suggestions.length > 0 && (
@@ -214,14 +335,31 @@ export function SearchPage() {
             <Spinner size={20} />
           </div>
         ) : hasQuery ? (
+
           <EmptyState
-            icon={<SearchIcon className="h-8 w-8" />}
-            title={`Nothing matches “${query.trim()}”`}
-            body="Try fewer words, or check the spelling — search also tolerates a single typo in longer words."
+            icon={
+              <SearchIcon className="h-8 w-8" />
+            }
+            title={
+              searchingOnline
+                ? 'Searching online…'
+                : onlineResults.length > 0
+                  ? 'Not found in your library'
+                  : `Nothing matches “${query.trim()}”`
+            }
+            body={
+              searchingOnline
+                ? 'Looking for this song online.'
+                : onlineResults.length > 0
+                  ? 'Choose a result above to download it.'
+                  : 'Try fewer words, or check the spelling.'
+            }
           />
-        ) : (
-          <div className="h-2" />
+
         )
+          : (
+            <div className="h-2" />
+          )
       }
     />
   );

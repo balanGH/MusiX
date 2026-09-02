@@ -64,6 +64,7 @@ export interface LibraryState {
   refreshCounts(): Promise<void>;
   addFolder(): Promise<{ added: boolean; message?: string }>;
   addFiles(options: { folder: boolean }): Promise<{ added: boolean; message?: string }>;
+  importDownloadedFile(file: File, displayName: string): Promise<{ added: boolean; message?: string }>;
   scanSource(sourceId: string, mode?: 'incremental' | 'full'): Promise<void>;
   scanAll(mode?: 'incremental' | 'full'): Promise<void>;
   cancelScan(): void;
@@ -211,6 +212,41 @@ export const useLibrary = create<LibraryState>()((set, get) => ({
     } catch (error) {
       const message = describeError(error);
       set({ importing: null, error: message });
+      return { added: false, message };
+    }
+  },
+
+  /**
+   * A single track fetched from the online downloader (spec §23's "not in
+   * your library" path). Copied into OPFS through the same imported-source
+   * pipeline as a manual file pick, so it shows up, plays, and survives a
+   * reload exactly like any other imported track.
+   */
+  async importDownloadedFile(file, displayName) {
+    try {
+      const result = await importFiles([file], displayName);
+      if (result.copied === 0) {
+        return { added: false, message: result.failed[0]?.reason ?? 'Could not save the download.' };
+      }
+
+      registerProvider(result.provider);
+      const source: MusicSource = {
+        id: result.sourceId,
+        kind: 'imported',
+        name: result.name,
+        addedAt: Date.now(),
+        lastScanAt: null,
+        trackCount: 0,
+        handleKey: null,
+      };
+      await putSource(source);
+      set((state) => ({ sources: [...state.sources, source] }));
+
+      await get().scanSource(source.id, 'full');
+      return { added: true };
+    } catch (error) {
+      const message = describeError(error);
+      set({ error: message });
       return { added: false, message };
     }
   },

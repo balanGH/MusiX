@@ -26,3 +26,4 @@ numpy>=1.24,<2.0
 #   macOS          brew install ffmpeg
 #   Debian/Ubuntu  sudo apt install ffmpeg
 #   Windows        https://ffmpeg.org/download.html, then add it to PATH
+yt-dlp
