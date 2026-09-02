@@ -6,7 +6,14 @@ export interface OnlineSong {
     channel?: string;
     artist?: string;
     album?: string;
+    year?: number;
     duration?: number;
+    /**
+     * True when the entry carries real track/artist metadata, which only
+     * YouTube Music entries do. A plain video result imports with its title
+     * and no artist, so the two are worth distinguishing in the list.
+     */
+    hasMetadata?: boolean;
 }
 
 export interface DownloadJob {

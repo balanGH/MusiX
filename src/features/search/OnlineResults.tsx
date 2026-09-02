@@ -94,7 +94,7 @@ export function OnlineResults({ results }: Props) {
                   className="h-14 w-14 shrink-0 rounded-lg object-cover"
                 />
               ) : (
-                <div className="h-14 w-14 shrink-0 rounded-lg bg-surface-2" />
+                <div className="h-14 w-14 shrink-0 rounded-lg bg-surface-hover" />
               )}
 
               <div className="min-w-0 flex-1">
@@ -106,11 +106,20 @@ export function OnlineResults({ results }: Props) {
                   {song.artist || song.channel || 'Unknown artist'}
                 </p>
 
-                {song.album && (
-                  <p className="truncate text-2xs text-subtle">
-                    {song.album}
-                  </p>
-                )}
+                <p className="truncate text-2xs text-subtle">
+                  {song.album ? (
+                    <>
+                      {song.album}
+                      {song.year ? ` · ${song.year}` : ''}
+                    </>
+                  ) : (
+                    // Says why this one will import as an untagged track,
+                    // rather than letting it look the same as a tagged result.
+                    <span className="text-warn">
+                      No album or artist tags — imports with just a title
+                    </span>
+                  )}
+                </p>
               </div>
 
               <Button
