@@ -316,47 +316,54 @@ export function NowPlaying() {
             <NowPlayingSeek durationMs={track.durationMs} />
           )}
 
-          {/* Transport */}
-          <div className="mt-4 flex items-center justify-center gap-3">
-            <IconButton
-              label={shuffle ? 'Turn shuffle off' : 'Turn shuffle on'}
-              size={40}
-              active={shuffle}
-              onClick={playerActions.toggleShuffle}
-            >
-              <Shuffle className="h-[18px] w-[18px]" />
-            </IconButton>
-            <IconButton label="Previous track" size={46} onClick={() => void playerActions.previous()}>
-              <SkipBack className="h-6 w-6 fill-current" />
-            </IconButton>
-            <IconButton
-              label={playing ? 'Pause' : 'Play'}
-              size={62}
-              variant="accent"
-              onClick={() => void playerActions.toggle()}
-            >
-              {playing ? (
-                <Pause className="h-7 w-7 fill-current" />
-              ) : (
-                <Play className="ml-1 h-7 w-7 fill-current" />
-              )}
-            </IconButton>
-            <IconButton label="Next track" size={46} onClick={() => void playerActions.next()}>
-              <SkipForward className="h-6 w-6 fill-current" />
-            </IconButton>
-            <IconButton
-              label={repeat === 'off' ? 'Turn repeat on' : repeat === 'all' ? 'Repeat one' : 'Repeat off'}
-              size={40}
-              active={repeat !== 'off'}
-              onClick={playerActions.cycleRepeat}
-            >
-              {repeat === 'one' ? (
-                <Repeat1 className="h-[18px] w-[18px]" />
-              ) : (
-                <Repeat className="h-[18px] w-[18px]" />
-              )}
-            </IconButton>
-          </div>
+          {/* Transport.
+              Hidden while the mixer is open: it already renders its own
+              complete Play/Pause and seek bar for the stems, and showing this
+              row as well meant two play buttons on screen for what is, from
+              the exclusivity guard's point of view, one audio source at a
+              time — pressing either was liable to silently stop the other. */}
+          {!mixerOpen && (
+            <div className="mt-4 flex items-center justify-center gap-3">
+              <IconButton
+                label={shuffle ? 'Turn shuffle off' : 'Turn shuffle on'}
+                size={40}
+                active={shuffle}
+                onClick={playerActions.toggleShuffle}
+              >
+                <Shuffle className="h-[18px] w-[18px]" />
+              </IconButton>
+              <IconButton label="Previous track" size={46} onClick={() => void playerActions.previous()}>
+                <SkipBack className="h-6 w-6 fill-current" />
+              </IconButton>
+              <IconButton
+                label={playing ? 'Pause' : 'Play'}
+                size={62}
+                variant="accent"
+                onClick={() => void playerActions.toggle()}
+              >
+                {playing ? (
+                  <Pause className="h-7 w-7 fill-current" />
+                ) : (
+                  <Play className="ml-1 h-7 w-7 fill-current" />
+                )}
+              </IconButton>
+              <IconButton label="Next track" size={46} onClick={() => void playerActions.next()}>
+                <SkipForward className="h-6 w-6 fill-current" />
+              </IconButton>
+              <IconButton
+                label={repeat === 'off' ? 'Turn repeat on' : repeat === 'all' ? 'Repeat one' : 'Repeat off'}
+                size={40}
+                active={repeat !== 'off'}
+                onClick={playerActions.cycleRepeat}
+              >
+                {repeat === 'one' ? (
+                  <Repeat1 className="h-[18px] w-[18px]" />
+                ) : (
+                  <Repeat className="h-[18px] w-[18px]" />
+                )}
+              </IconButton>
+            </div>
+          )}
 
           {/* Secondary actions */}
           <div className="mt-6 flex items-center justify-center gap-2">

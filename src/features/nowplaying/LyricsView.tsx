@@ -11,6 +11,12 @@
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  activeAudioSource,
+  activeSourceSnapshot,
+  onAudioSourceChange,
+  seekActiveSource,
+} from '@core/audio/exclusivity';
 import { activeLyricIndex } from '@core/lyrics/lrc';
 import { player } from '@core/playback/controller';
 import { usePlayer, usePlayerPosition } from '@state/playerStore';
@@ -32,11 +38,30 @@ function SyncedLyrics({ lyrics }: { lyrics: Lyrics }) {
   // Memoised: a fresh `[]` each render would restart the animation loop below
   // on every frame it caused.
   const lines = useMemo(() => lyrics.lines ?? [], [lyrics.lines]);
-  const playing = usePlayer((state) => state.status === 'playing');
+  const mainPlaying = usePlayer((state) => state.status === 'playing');
   // Only read while paused (see the second effect below): subscribing to this
   // while playing would re-render on every ~250ms position tick, which the RAF
   // loop exists specifically to avoid.
   const pausedPositionSec = usePlayerPosition((state) => state.positionSec);
+
+  /**
+   * The stem mixer (spec §18, §19) is a second, independent audio graph with
+   * no store of its own — unlike the main player, nothing here re-renders
+   * automatically when it starts, stops or is seeked. `exclusivity.ts` is
+   * both engines' single point of coordination, so this subscribes to it and
+   * bumps a counter on any change; `mixerActive`/`mixerPlaying` below are then
+   * read fresh off it on every render that counter causes, rather than kept
+   * as their own duplicate state.
+   */
+  const [sourceVersion, setSourceVersion] = useState(0);
+  useEffect(() => onAudioSourceChange(() => setSourceVersion((v) => v + 1)), []);
+  const mixerActive = activeAudioSource() === 'mixer';
+  const mixerPlaying = mixerActive && (activeSourceSnapshot()?.playing ?? false);
+  // While the mixer owns playback the main player is paused (the exclusivity
+  // guard stops it), so `mainPlaying` alone would freeze the lyrics during a
+  // karaoke session — this is what makes them follow whichever is audible.
+  const effectivelyPlaying = mixerActive ? mixerPlaying : mainPlaying;
+
   const [active, setActive] = useState(-1);
   const containerRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLParagraphElement>(null);
@@ -46,36 +71,42 @@ function SyncedLyrics({ lyrics }: { lyrics: Lyrics }) {
   /**
    * Track the playhead while playing.
    *
-   * Polls `player`'s position directly each animation frame rather than
-   * subscribing to the position store: the store updates on every native
-   * `timeupdate` (~4/sec), which would re-render this component that often.
-   * Polling and only calling `setActive` when the *line* actually changes
-   * keeps re-renders down to once per lyric line, not once per tick.
+   * Polls position directly each animation frame rather than subscribing to a
+   * store: the main player's store updates on every native `timeupdate`
+   * (~4/sec), which would re-render this component that often, and the stem
+   * mixer has no store at all. Polling and only calling `setActive` when the
+   * *line* actually changes keeps re-renders down to once per lyric line.
    */
   useEffect(() => {
-    if (!playing) return;
+    if (!effectivelyPlaying) return;
     let frame = 0;
     const tick = () => {
-      const index = activeLyricIndex(lines, playerPositionMs());
+      const index = activeLyricIndex(lines, currentPositionMs());
       setActive((current) => (current === index ? current : index));
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [lines, playing]);
+  }, [lines, effectivelyPlaying]);
 
   /**
    * Track the playhead while paused.
    *
    * The RAF loop above only runs while playing, so without this a seek made
-   * at rest — dragging the seek bar, or clicking a different lyric line —
-   * left the highlight frozen on whatever line was active when playback
-   * stopped, which reads as broken sync.
+   * at rest — dragging either engine's seek bar, or clicking a different
+   * lyric line — left the highlight frozen on whatever line was active when
+   * playback stopped, which reads as broken sync. `sourceVersion` is the
+   * mixer half of that: its own paused seeks have no store to trigger a
+   * re-render, only the exclusivity notification below.
    */
   useEffect(() => {
-    if (playing) return;
-    setActive(activeLyricIndex(lines, pausedPositionSec * 1000));
-  }, [lines, playing, pausedPositionSec]);
+    if (effectivelyPlaying) return;
+    setActive(activeLyricIndex(lines, currentPositionMs()));
+    // `pausedPositionSec` and `sourceVersion` are not read in the body above —
+    // `currentPositionMs()` reads live state instead — they are here purely as
+    // triggers, so this effect re-runs on a main-player seek or a mixer-side
+    // change respectively.
+  }, [lines, effectivelyPlaying, pausedPositionSec, sourceVersion]);
 
   // Keep the active line centred, unless the user is scrolling themselves.
   useLayoutEffect(() => {
@@ -101,8 +132,13 @@ function SyncedLyrics({ lyrics }: { lyrics: Lyrics }) {
           key={`${line.timeMs}-${index}`}
           ref={index === active ? activeRef : undefined}
           // Clicking a line seeks to it — the single most useful thing a
-          // synchronised lyric sheet can do.
-          onClick={() => player.seek(line.timeMs / 1000)}
+          // synchronised lyric sheet can do. Seeks whichever engine actually
+          // owns playback (the stem mixer, during karaoke); falls back to the
+          // main player when nothing has claimed yet, e.g. lyrics opened
+          // before the track has been played at all.
+          onClick={() => {
+            if (!seekActiveSource(line.timeMs / 1000)) player.seek(line.timeMs / 1000);
+          }}
           className={cx(
             'cursor-pointer py-1.5 text-center text-lg leading-snug transition-colors',
             index === active
@@ -119,7 +155,14 @@ function SyncedLyrics({ lyrics }: { lyrics: Lyrics }) {
   );
 }
 
-/** Live playhead in milliseconds. */
-function playerPositionMs(): number {
-  return player.getState().positionSec * 1000;
+/**
+ * Live playhead in milliseconds, from whichever engine is actually audible.
+ *
+ * Prefers the exclusivity layer's snapshot, which is correct for both engines;
+ * falls back to the main player directly for the moment before anything has
+ * ever claimed playback (exclusivity.ts's `active` starts as null).
+ */
+function currentPositionMs(): number {
+  const snapshot = activeSourceSnapshot();
+  return (snapshot ? snapshot.positionSec : player.getState().positionSec) * 1000;
 }

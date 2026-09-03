@@ -15,6 +15,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, Headphones, Mic2, Pause, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react';
+import {
+  claimAudioSource,
+  notifyAudioSourceChanged,
+  registerAudioSource,
+  unregisterAudioSource,
+} from '@core/audio/exclusivity';
 import { clamp, formatDuration, sliderToGain } from '@core/utils';
 import { stemUrl, type JobState, type StemName } from '@core/studio/client';
 import { Button, IconButton, Slider, cx } from '@ui/primitives';
@@ -49,6 +55,13 @@ export function StemMixer({ job }: { job: JobState }) {
   const contextRef = useRef<AudioContext | null>(null);
   const channelsRef = useRef<StemChannel[]>([]);
   const frameRef = useRef(0);
+  // Mirrors `playing` for the exclusivity handle below, which is registered
+  // once on mount and would otherwise close over a stale `playing` from that
+  // first render — refs read live, state closures do not.
+  const playingRef = useRef(false);
+  useEffect(() => {
+    playingRef.current = playing;
+  }, [playing]);
 
   const stems = useMemo(() => job.stems.map((stem) => stem.name), [job.stems]);
 
@@ -197,30 +210,63 @@ export function StemMixer({ job }: { job: JobState }) {
     [applyGains],
   );
 
+  /** Pause every channel without touching the AudioContext itself. */
+  const pauseAll = useCallback(() => {
+    for (const channel of channelsRef.current) channel.element.pause();
+    playingRef.current = false;
+    setPlaying(false);
+  }, []);
+
   const toggle = useCallback(async () => {
     const context = contextRef.current;
     if (!context) return;
     if (context.state === 'suspended') await context.resume();
 
     if (playing) {
-      for (const channel of channelsRef.current) channel.element.pause();
-      setPlaying(false);
+      pauseAll();
+      notifyAudioSourceChanged();
       return;
     }
+
+    // Claimed before the elements actually start: the main player (or
+    // anything else) must be silenced first, not after a race with it.
+    claimAudioSource('mixer');
 
     // Align before starting, then start together.
     const clock = channelsRef.current[0];
     const start = clock?.element.currentTime ?? 0;
     for (const channel of channelsRef.current) channel.element.currentTime = start;
     await Promise.all(channelsRef.current.map((channel) => channel.element.play()));
+    playingRef.current = true;
     setPlaying(true);
-  }, [playing]);
+    notifyAudioSourceChanged();
+  }, [playing, pauseAll]);
 
   const seek = useCallback((seconds: number) => {
     for (const channel of channelsRef.current) channel.element.currentTime = seconds;
     setPosition(seconds);
     setDragging(null);
+    // Only matters while paused — the sync loop already reports live position
+    // every frame while playing — but it's what lets the lyrics view notice a
+    // paused seek made from its own "click a line to jump there" handler.
+    notifyAudioSourceChanged();
   }, []);
+
+  /**
+   * Make this mixer a source other code can discover, stop, seek and poll —
+   * registered once so the main player (and, through it, a keyboard shortcut
+   * or an OS media key) can silence this mixer without knowing it exists, and
+   * so the lyrics view can follow it during karaoke playback (spec §14).
+   */
+  useEffect(() => {
+    registerAudioSource('mixer', {
+      stop: pauseAll,
+      seek,
+      getPositionSec: () => channelsRef.current[0]?.element.currentTime ?? 0,
+      isPlaying: () => playingRef.current,
+    });
+    return () => unregisterAudioSource('mixer');
+  }, [pauseAll, seek]);
 
   if (job.status !== 'complete') return null;
 

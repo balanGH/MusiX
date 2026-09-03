@@ -23,6 +23,7 @@
  * An idle MusiX should not appear in a battery report.
  */
 
+import { claimAudioSource, registerAudioSource } from './exclusivity';
 import { createLogger, describeError } from '../logger';
 import { clamp, dbToGain, sliderToGain } from '../utils';
 import { Equalizer } from './equalizer';
@@ -265,6 +266,7 @@ export class AudioEngine {
     const current = this.currentDeck;
     if (!next?.track || !this.context) return false;
 
+    claimAudioSource('player');
     const fade = this.crossfadeSec;
     try {
       next.element.playbackRate = this.rate;
@@ -295,6 +297,11 @@ export class AudioEngine {
   async play(): Promise<void> {
     const deck = this.currentDeck;
     if (!deck || !this.context) return;
+    // Every path that can start the main player — a button, the spacebar
+    // shortcut, an OS media key, a Bluetooth headset — funnels through this
+    // method or `handoff()`, which is why the exclusivity claim lives here
+    // rather than in each of those entry points.
+    claimAudioSource('player');
     this.cancelIdleSuspend();
 
     if (this.context.state === 'suspended') {
@@ -721,3 +728,13 @@ function waitForMetadata(element: HTMLAudioElement): Promise<void> {
 
 /** The app's single engine instance. */
 export const audioEngine = new AudioEngine();
+
+// Registered unconditionally at module load: `active` stays null in
+// exclusivity.ts until something actually claims playback, so this has no
+// effect until the stem mixer exists and a claim happens.
+registerAudioSource('player', {
+  stop: () => audioEngine.pause(),
+  seek: (seconds) => audioEngine.seek(seconds),
+  getPositionSec: () => audioEngine.currentTime,
+  isPlaying: () => audioEngine.snapshot().status === 'playing',
+});
