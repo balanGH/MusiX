@@ -13,7 +13,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { activeLyricIndex } from '@core/lyrics/lrc';
 import { player } from '@core/playback/controller';
-import { usePlayer } from '@state/playerStore';
+import { usePlayer, usePlayerPosition } from '@state/playerStore';
 import type { Lyrics } from '@core/types';
 import { cx } from '@ui/primitives';
 
@@ -33,6 +33,10 @@ function SyncedLyrics({ lyrics }: { lyrics: Lyrics }) {
   // on every frame it caused.
   const lines = useMemo(() => lyrics.lines ?? [], [lyrics.lines]);
   const playing = usePlayer((state) => state.status === 'playing');
+  // Only read while paused (see the second effect below): subscribing to this
+  // while playing would re-render on every ~250ms position tick, which the RAF
+  // loop exists specifically to avoid.
+  const pausedPositionSec = usePlayerPosition((state) => state.positionSec);
   const [active, setActive] = useState(-1);
   const containerRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLParagraphElement>(null);
@@ -40,30 +44,38 @@ function SyncedLyrics({ lyrics }: { lyrics: Lyrics }) {
   const userScrolledAt = useRef(0);
 
   /**
-   * Track the playhead.
+   * Track the playhead while playing.
    *
-   * Reads `player`'s live position rather than the throttled store: the store
-   * updates about four times a second, which is visibly late for a lyric line.
+   * Polls `player`'s position directly each animation frame rather than
+   * subscribing to the position store: the store updates on every native
+   * `timeupdate` (~4/sec), which would re-render this component that often.
+   * Polling and only calling `setActive` when the *line* actually changes
+   * keeps re-renders down to once per lyric line, not once per tick.
    */
   useEffect(() => {
+    if (!playing) return;
     let frame = 0;
     const tick = () => {
-      const positionMs = playerPositionMs();
-      const index = activeLyricIndex(lines, positionMs);
+      const index = activeLyricIndex(lines, playerPositionMs());
       setActive((current) => (current === index ? current : index));
       frame = requestAnimationFrame(tick);
     };
-
-    // While paused the position cannot change, so one read is enough — no
-    // animation loop is left running behind a paused player.
-    if (!playing) {
-      setActive(activeLyricIndex(lines, playerPositionMs()));
-      return;
-    }
-
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
   }, [lines, playing]);
+
+  /**
+   * Track the playhead while paused.
+   *
+   * The RAF loop above only runs while playing, so without this a seek made
+   * at rest — dragging the seek bar, or clicking a different lyric line —
+   * left the highlight frozen on whatever line was active when playback
+   * stopped, which reads as broken sync.
+   */
+  useEffect(() => {
+    if (playing) return;
+    setActive(activeLyricIndex(lines, pausedPositionSec * 1000));
+  }, [lines, playing, pausedPositionSec]);
 
   // Keep the active line centred, unless the user is scrolling themselves.
   useLayoutEffect(() => {
