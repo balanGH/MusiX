@@ -23,7 +23,7 @@ import {
   tracksByArtist,
 } from '@core/db/repositories/tracks';
 import { rebuildAggregates, rebuildFolders } from '@core/library/importer';
-import { childFolders, listAlbums, listArtists } from '@core/db/repositories/library';
+import { childFolders, getArtist, listAlbums, listArtists } from '@core/db/repositories/library';
 import { buildTrack, albumIdFor, artistIdFor, trackIdFor } from '@core/library/trackBuilder';
 import { matchesRuleSet, materialiseSmartPlaylist } from '@core/playlists/smart';
 import { computeLibraryHealth } from '@core/library/health';
@@ -298,6 +298,41 @@ describe('derived albums, artists and folders', () => {
     expect(burial.albumCount).toBe(1);
     // A guest appearance counts for the guest too, but does not invent an album.
     expect(thom.trackCount).toBe(1);
+  });
+
+  it('names every credited artist correctly, even when the album-artist tag itself lists more than one', async () => {
+    // The regression this covers: `track.artistIds` is built from *split*
+    // artist and album-artist names (trackBuilder.ts), but the aggregator
+    // used to pair those ids against a `names` array built from the artist
+    // names plus the *raw, unsplit* album-artist string. A track with a
+    // single-name artist tag but a multi-name album-artist tag — a
+    // soundtrack cut credited to one performer, on an album credited to
+    // the two composers who scored it — produced fewer names than ids, and
+    // the id past that point silently took the *track's* artist string as
+    // its name instead of its own.
+    await putTracks([
+      makeTrack('Soundtrack/Score/01 Theme.flac', {
+        title: 'Theme',
+        artist: 'Session Singer',
+        // A semicolon is one of the separators splitArtists() actually
+        // recognises (unlike a bare comma, which is deliberately left
+        // alone — see utils/index.ts — because too many real acts use one
+        // in their own name, e.g. "Crosby, Stills & Nash").
+        albumArtist: 'Composer One; Composer Two',
+        album: 'Score',
+      }),
+    ]);
+    await rebuildAggregates();
+
+    const singer = await getArtist(artistIdFor('Session Singer'));
+    const composerOne = await getArtist(artistIdFor('Composer One'));
+    const composerTwo = await getArtist(artistIdFor('Composer Two'));
+
+    expect(singer?.name).toBe('Session Singer');
+    expect(composerOne?.name).toBe('Composer One');
+    // This is the id that used to fall through to "Session Singer" — the
+    // track's own artist field — instead of its real name.
+    expect(composerTwo?.name).toBe('Composer Two');
   });
 
   it('builds the folder tree with the parent chain intact', async () => {

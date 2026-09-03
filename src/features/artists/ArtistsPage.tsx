@@ -102,8 +102,14 @@ export function ArtistCard({ artist }: { artist: Artist }) {
         className="block w-full rounded-full focus-visible:outline-offset-4"
         aria-label={`Open ${artist.name}`}
       >
+        {/* Never `artist.artworkId`: nothing in an audio file is a photo of the
+            artist, only of an album — that field is really "one of their
+            covers, arbitrarily", and showing it as if it were a portrait
+            reads as a wrong picture, not a missing one. `Artwork`'s own
+            placeholder (a stable-hued tile keyed by name) is the honest
+            choice until Phase 2's online metadata can bring in a real one. */}
         <Artwork
-          artworkId={artist.artworkId}
+          artworkId={null}
           name={artist.name}
           rounded="full"
           className="aspect-square w-full shadow-card transition group-hover/card:brightness-110"

@@ -258,8 +258,9 @@ export function SearchPage() {
                 onClick={() => navigate(`/artists/${artist.id}`)}
                 className="flex w-24 shrink-0 flex-col items-center gap-1.5 text-center"
               >
+                {/* Not `artist.artworkId` — see ArtistCard in ArtistsPage.tsx. */}
                 <Artwork
-                  artworkId={artist.artworkId}
+                  artworkId={null}
                   name={artist.name}
                   size={80}
                   rounded="full"

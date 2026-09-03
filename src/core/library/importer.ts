@@ -9,10 +9,10 @@
  * already-expensive scan costs nothing worth optimising.
  */
 
-import { collator, dedupe, fold, sortKey } from '../utils';
+import { collator, fold, sortKey, splitArtists } from '../utils';
 import { replaceAggregates, deleteFolders, listFolders, putFolders } from '../db/repositories/library';
 import { scanAllTracks } from '../db/repositories/tracks';
-import { folderIdFor } from './trackBuilder';
+import { artistIdFor, folderIdFor } from './trackBuilder';
 import type { Album, Artist, AudioFormat, Folder, Track } from '../types';
 
 /** Internal accumulator; not persisted. */
@@ -135,10 +135,23 @@ function accumulateAlbum(albums: Map<string, AlbumAcc>, track: Track): void {
 function accumulateArtists(artists: Map<string, ArtistAcc>, track: Track): void {
   // Every credited artist gets the track, which is what makes a featured
   // appearance show up on the guest artist's page too (spec §29).
-  const names = dedupe([...track.artists, track.albumArtist]).filter(Boolean);
-  for (let i = 0; i < track.artistIds.length; i++) {
-    const id = track.artistIds[i]!;
-    const name = names[i] ?? track.artist;
+  //
+  // Each split name is paired with its *own* id via `artistIdFor`, the same
+  // function `trackBuilder.ts` used to build `track.artistIds` in the first
+  // place — rather than zipping `track.artistIds[i]` against a separately
+  // built `names[i]` by position. The previous version did the latter,
+  // pairing split artists with an *unsplit* `track.albumArtist` string: a
+  // track whose album-artist credit itself named more than one person
+  // produced fewer names than ids, and every id past that point silently
+  // took `track.artist` — the whole track's artist string — as its name,
+  // mislabelling that artist's own page.
+  const idToName = new Map<string, string>();
+  for (const name of [...track.artists, ...splitArtists(track.albumArtist)]) {
+    idToName.set(artistIdFor(name), name);
+  }
+
+  for (const id of track.artistIds) {
+    const name = idToName.get(id) ?? track.artist;
     const existing = artists.get(id);
     if (!existing) {
       artists.set(id, {

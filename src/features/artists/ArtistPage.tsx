@@ -80,8 +80,10 @@ export function ArtistPage() {
         eyebrow="Artist"
         title={artist.name}
         artwork={
+          // `artist.artworkId` is really "one of their album covers" — see
+          // ArtistsPage.tsx's ArtistCard for why that never belongs here.
           <Artwork
-            artworkId={artist.artworkId}
+            artworkId={null}
             name={artist.name}
             full
             rounded="full"
