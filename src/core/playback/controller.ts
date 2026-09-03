@@ -23,7 +23,13 @@ import {
 } from '../audio/mediaSession';
 import { getArtwork } from '../db/repositories/artwork';
 import { loadSession, saveSession, type PersistedSession } from '../db/repositories/settings';
-import { getTrack, getTracks, recordPlay, recordSkip } from '../db/repositories/tracks';
+import {
+  getTrack,
+  getTracks,
+  recordPlay,
+  recordSkip,
+  setFavorite as writeFavorite,
+} from '../db/repositories/tracks';
 import { createLogger, describeError } from '../logger';
 import { openTrackFile } from '../platform';
 import { debounce } from '../utils';
@@ -271,6 +277,29 @@ class PlayerController {
     this.positionSec = audioEngine.currentTime;
     this.emit('progress', { positionSec: this.positionSec, durationSec: this.durationSec });
     this.persist();
+  }
+
+  /**
+   * Favourite (or unfavourite) a track, keeping the currently-loaded copy in
+   * sync when it's the one being changed.
+   *
+   * `usePlayer().track` — what the persistent player bar and Now Playing both
+   * read — is a snapshot held on this controller, not a live query. Writing
+   * straight to the database (the tracks repository's `setFavorite`) updates
+   * the stored row correctly but leaves that snapshot's `favorite` field
+   * exactly as it was, so a heart in either of those two places would toggle
+   * the database and then immediately look like nothing happened, no matter
+   * how many times it was clicked — clicking again would just toggle it back
+   * and forth invisibly. Every favourite control that might be showing the
+   * currently-playing track should call this rather than the repository
+   * function directly.
+   */
+  async setFavorite(trackId: string, favorite: boolean): Promise<void> {
+    const updated = await writeFavorite(trackId, favorite);
+    if (updated && this.track?.id === trackId) {
+      this.track = updated;
+      this.emitChange();
+    }
   }
 
   // -------------------------------------------------------------------------

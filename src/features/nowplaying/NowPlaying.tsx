@@ -29,7 +29,6 @@ import {
 } from 'lucide-react';
 import { getLyrics } from '@core/db/repositories/lyrics';
 import { fetchAndStoreLyrics } from '@core/lyrics/online';
-import { setFavorite } from '@core/db/repositories/tracks';
 import { openTrackFile } from '@core/platform';
 import {
   DEFAULT_STEMS,
@@ -371,7 +370,7 @@ export function NowPlaying() {
               label={track.favorite ? 'Remove from favourites' : 'Add to favourites'}
               size={38}
               className={cx(track.favorite && 'text-accent')}
-              onClick={() => void setFavorite(track.id, !track.favorite)}
+              onClick={() => void playerActions.setFavorite(track.id, !track.favorite)}
             >
               <Heart className={cx('h-[18px] w-[18px]', track.favorite && 'fill-current')} />
             </IconButton>

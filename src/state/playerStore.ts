@@ -109,6 +109,16 @@ export const playerActions = {
   seek: (positionSec: number) => player.seek(positionSec),
   stop: () => player.stop(),
 
+  /**
+   * Favourite (or unfavourite) a track.
+   *
+   * Routes through the controller rather than writing to the database
+   * directly, so that when `trackId` is the track currently loaded, the
+   * player bar and Now Playing — both reading `usePlayer().track.favorite` —
+   * actually see the change instead of the click silently doing nothing.
+   */
+  setFavorite: (trackId: string, favorite: boolean) => player.setFavorite(trackId, favorite),
+
   setVolume(value: number) {
     useSettings.setState({ volume: value, muted: false });
     player.setVolume(value);

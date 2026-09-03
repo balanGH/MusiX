@@ -10,7 +10,7 @@
  * components instead of the whole bar.
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   Heart,
   ListMusic,
@@ -26,7 +26,6 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import { setFavorite } from '@core/db/repositories/tracks';
 import { formatDuration } from '@core/utils';
 import { playerActions, usePlayer, usePlayerPosition } from '@state/playerStore';
 import { useSettings } from '@state/settingsStore';
@@ -229,25 +228,21 @@ function VolumeControl() {
 /**
  * Favourite toggle for the currently playing track.
  *
- * Holds its own optimistic copy so the heart fills instantly; the controller's
- * next state push corrects it if the write failed.
+ * `favorite` is read straight from the store rather than mirrored into local
+ * state: `playerActions.setFavorite` writes through the player controller,
+ * which patches its cached track and re-emits when it's the one currently
+ * loaded, so this genuinely updates rather than needing an optimistic guess
+ * that a later state push might silently fail to correct.
  */
 function FavoriteButton({ trackId, favorite }: { trackId: string; favorite: boolean }) {
-  const [optimistic, setOptimistic] = useState(favorite);
-  useEffect(() => setOptimistic(favorite), [favorite, trackId]);
-
   return (
     <IconButton
-      label={optimistic ? 'Remove from favourites' : 'Add to favourites'}
+      label={favorite ? 'Remove from favourites' : 'Add to favourites'}
       size={32}
-      className={cx('hidden shrink-0 sm:inline-flex', optimistic && 'text-accent')}
-      onClick={() => {
-        const next = !optimistic;
-        setOptimistic(next);
-        void setFavorite(trackId, next).catch(() => setOptimistic(!next));
-      }}
+      className={cx('hidden shrink-0 sm:inline-flex', favorite && 'text-accent')}
+      onClick={() => void playerActions.setFavorite(trackId, !favorite)}
     >
-      <Heart className={cx('h-4 w-4', optimistic && 'fill-current')} />
+      <Heart className={cx('h-4 w-4', favorite && 'fill-current')} />
     </IconButton>
   );
 }

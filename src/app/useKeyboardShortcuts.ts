@@ -11,7 +11,6 @@
 
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { setFavorite } from '@core/db/repositories/tracks';
 import { playerActions, usePlayer, usePlayerPosition } from '@state/playerStore';
 import { useSettings } from '@state/settingsStore';
 import { useUi } from '@state/uiStore';
@@ -145,7 +144,9 @@ function nudgeVolume(delta: number): void {
 async function favoriteCurrent(): Promise<void> {
   const track = usePlayer.getState().track;
   if (!track) return;
-  await setFavorite(track.id, !track.favorite);
+  // Routed through the player, not the repository directly, so the heart in
+  // the player bar and Now Playing actually reflects the change (spec §15).
+  await playerActions.setFavorite(track.id, !track.favorite);
   useUi
     .getState()
     .toast(track.favorite ? 'Removed from favourites.' : 'Added to favourites.', {

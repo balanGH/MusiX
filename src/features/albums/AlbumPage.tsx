@@ -9,7 +9,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Disc3, ListPlus, Play, Shuffle } from 'lucide-react';
 import { getAlbum } from '@core/db/repositories/library';
-import { setFavorite, tracksByAlbum } from '@core/db/repositories/tracks';
+import { tracksByAlbum } from '@core/db/repositories/tracks';
 import { formatDurationLong } from '@core/utils';
 import { useLibrary } from '@state/libraryStore';
 import { playerActions, usePlayer } from '@state/playerStore';
@@ -183,7 +183,11 @@ export function AlbumPage() {
                             row.id === track.id ? { ...row, favorite: !row.favorite } : row,
                           ),
                         );
-                        void setFavorite(track.id, !track.favorite);
+                        // Through the player, not the repository directly: if
+                        // this row happens to be the currently-playing track,
+                        // the player bar and Now Playing need to hear about it
+                        // too, or their heart silently stops reflecting reality.
+                        void playerActions.setFavorite(track.id, !track.favorite);
                       }}
                       menuItems={trackMenuItems({
                         onPlayNext: () => playerActions.playNext([track.id]),
