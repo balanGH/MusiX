@@ -10,15 +10,18 @@
 import { create } from 'zustand';
 import { countAlbums, countArtists, countFolders, listSources } from '@core/db/repositories/library';
 import { countTracks, favoriteCount } from '@core/db/repositories/tracks';
-import { putSource, removeSource } from '@core/db/repositories/library';
+import { getSource, putSource, removeSource } from '@core/db/repositories/library';
 import { requestPersistentStorage } from '@core/db/database';
 import { createLogger, describeError } from '@core/logger';
 import { ensureBuiltinPlaylists } from '@core/playlists/smart';
 import { invalidateSearchIndex } from '@core/search';
+import { hashId } from '@core/utils';
 import {
+  addFileToSource,
   capabilities,
   disposeSource,
   importFiles,
+  ImportedSource,
   pickDirectory,
   pickFiles,
   registerProvider,
@@ -28,6 +31,15 @@ import {
 import { cancelScan, PermissionRequiredError, runScan } from '@core/library/worker/client';
 import type { ScanProgress } from '@core/library/scanner';
 import type { MusicSource, ScanRecord } from '@core/types';
+
+/**
+ * Fixed, not random: every downloaded song needs to land in the *same* source
+ * across the whole app lifetime, which a `hashId(...Date.now()...)` — the id
+ * every other imported source gets — cannot give, since a new one is minted
+ * on every call. A single well-known id lets `importDownloadedFile` find its
+ * own source back on the next download without keeping any extra state.
+ */
+const DOWNLOADS_SOURCE_ID = hashId('musix:downloads-source');
 
 const log = createLogger('library.store');
 
@@ -64,7 +76,7 @@ export interface LibraryState {
   refreshCounts(): Promise<void>;
   addFolder(): Promise<{ added: boolean; message?: string }>;
   addFiles(options: { folder: boolean }): Promise<{ added: boolean; message?: string }>;
-  importDownloadedFile(file: File, displayName: string): Promise<{ added: boolean; message?: string }>;
+  importDownloadedFile(file: File): Promise<{ added: boolean; message?: string }>;
   scanSource(sourceId: string, mode?: 'incremental' | 'full'): Promise<void>;
   scanAll(mode?: 'incremental' | 'full'): Promise<void>;
   cancelScan(): void;
@@ -222,27 +234,40 @@ export const useLibrary = create<LibraryState>()((set, get) => ({
    * pipeline as a manual file pick, so it shows up, plays, and survives a
    * reload exactly like any other imported track.
    */
-  async importDownloadedFile(file, displayName) {
+  /**
+   * All songs downloaded from search land in the same "Downloads" source —
+   * created once, on the first download, and reused after that — rather than
+   * each one minting its own single-track source. The latter is what
+   * `importFiles` does (correctly, for the folder/file *picker*, where each
+   * pick genuinely is a new source); calling it per song instead filled the
+   * Folders page with a separate one-track folder per download.
+   */
+  async importDownloadedFile(file) {
     try {
-      const result = await importFiles([file], displayName);
-      if (result.copied === 0) {
-        return { added: false, message: result.failed[0]?.reason ?? 'Could not save the download.' };
+      let source = await getSource(DOWNLOADS_SOURCE_ID);
+
+      if (!source) {
+        source = {
+          id: DOWNLOADS_SOURCE_ID,
+          kind: 'imported',
+          name: 'Downloads',
+          addedAt: Date.now(),
+          lastScanAt: null,
+          trackCount: 0,
+          handleKey: null,
+        };
+        await putSource(source);
+        set((state) => ({ sources: [...state.sources, source!] }));
       }
 
-      registerProvider(result.provider);
-      const source: MusicSource = {
-        id: result.sourceId,
-        kind: 'imported',
-        name: result.name,
-        addedAt: Date.now(),
-        lastScanAt: null,
-        trackCount: 0,
-        handleKey: null,
-      };
-      await putSource(source);
-      set((state) => ({ sources: [...state.sources, source] }));
+      registerProvider(new ImportedSource(DOWNLOADS_SOURCE_ID, source.name));
 
-      await get().scanSource(source.id, 'full');
+      const result = await addFileToSource(DOWNLOADS_SOURCE_ID, file);
+      if (!result.copied) {
+        return { added: false, message: result.reason ?? 'Could not save the download.' };
+      }
+
+      await get().scanSource(DOWNLOADS_SOURCE_ID, 'incremental');
       return { added: true };
     } catch (error) {
       const message = describeError(error);

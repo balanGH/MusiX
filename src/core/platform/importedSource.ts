@@ -228,6 +228,43 @@ export async function importFiles(
 }
 
 /**
+ * Copy one more file into an *already-existing* imported source.
+ *
+ * `importFiles` always mints a fresh source (a new OPFS directory, a new
+ * `sourceId`) — correct for the case it exists for, the user explicitly
+ * picking a folder or a batch of files, where each pick genuinely is a new
+ * source. It is the wrong function for a downloaded song landing one at a
+ * time: calling it per song, as the online-download flow originally did,
+ * gave each individual track its own top-level `MusicSource` and Folder
+ * entry — a library that filled up with one-track "sources" instead of a
+ * single accumulating "Downloads" folder. This is the function that lets
+ * downloads keep adding into one source instead.
+ */
+export async function addFileToSource(
+  sourceId: string,
+  file: File,
+): Promise<{ copied: boolean; reason?: string }> {
+  if (!isSupportedAudioFile(file.name)) {
+    return { copied: false, reason: `“${file.name}” is not a supported audio format.` };
+  }
+  try {
+    const root = await opfsRoot();
+    const base = await root.getDirectoryHandle(sourceId, { create: true });
+    // Re-downloading the same song overwrites its old copy rather than
+    // accumulating duplicates — `file.name` is stable across a re-download
+    // (the backend renames to the same "Title - Artist.mp3" each time), and
+    // the scanner's own fingerprinting then treats it as an updated file at
+    // the same path, not a new track, once it rescans this source.
+    const handle = await base.getFileHandle(file.name, { create: true });
+    const writable = await handle.createWritable();
+    await file.stream().pipeTo(writable);
+    return { copied: true };
+  } catch (error) {
+    return { copied: false, reason: describeError(error) };
+  }
+}
+
+/**
  * Make a browser-supplied relative path safe to use as an OPFS path.
  *
  * The first segment of `webkitRelativePath` is the picked folder's own name,

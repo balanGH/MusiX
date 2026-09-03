@@ -50,10 +50,12 @@ export function OnlineResults({ results }: Props) {
       setProgress(100);
 
       // Copy the finished MP3 into the library, exactly as a manually
-      // imported file would be — so it shows up and plays right away.
+      // imported file would be — so it shows up and plays right away. All
+      // downloads accumulate into one shared "Downloads" source; the file's
+      // own name (already "Title - Artist" from the backend) is what's used
+      // for the file itself, so there is no display name to pass through here.
       const file = await getOnlineDownloadFile(jobId);
-      const displayName = status.artist ? `${status.artist} - ${status.title}` : status.title || song.title;
-      const result = await importDownloadedFile(file, displayName || song.title);
+      const result = await importDownloadedFile(file);
 
       if (!result.added) {
         throw new Error(result.message || 'Could not add the download to your library.');

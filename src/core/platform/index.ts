@@ -146,6 +146,6 @@ export function pickFiles(options: { folder?: boolean } = {}): Promise<File[]> {
 
 export { capabilities, DirectorySource, ImportedSource };
 export { pickDirectory } from './directorySource';
-export { importFiles, importedStorageUsage } from './importedSource';
+export { addFileToSource, importFiles, importedStorageUsage } from './importedSource';
 export { importStrategy, importStrategyExplanation } from './capabilities';
 export type { AccessState, FileEntry, SourceProvider } from './fs';
