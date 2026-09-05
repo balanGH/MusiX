@@ -24,7 +24,12 @@
  */
 
 import { putArtwork } from '../db/repositories/artwork';
-import { getArtistPhoto, listArtistPhotos, putArtistPhoto } from '../db/repositories/artistPhotos';
+import {
+  deleteArtistPhoto,
+  getArtistPhoto,
+  listArtistPhotos,
+  putArtistPhoto,
+} from '../db/repositories/artistPhotos';
 import { createLogger } from '../logger';
 import { processArtwork } from '../library/artworkProcessor';
 import type { Artist, ArtistPhoto } from '../types';
@@ -180,4 +185,13 @@ export async function fetchAndStoreArtistPhoto(artist: Artist): Promise<string |
 
   log.info(`stored a photo for ${artist.name}`);
   return photo.artworkId;
+}
+
+/**
+ * Remove a fetched photo — the matcher is a best guess (see
+ * `searchDeezerArtist` above) and sometimes picks the wrong person; this
+ * undoes that, reverting the artist back to the honest placeholder.
+ */
+export async function removeArtistPhoto(artistId: string): Promise<void> {
+  await deleteArtistPhoto(artistId);
 }

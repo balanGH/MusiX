@@ -166,3 +166,126 @@ function currentPositionMs(): number {
   const snapshot = activeSourceSnapshot();
   return (snapshot ? snapshot.positionSec : player.getState().positionSec) * 1000;
 }
+
+/**
+ * Word-by-word highlight within the currently active line, approximated.
+ *
+ * Currently switched off — not called from `SyncedLyrics`'s line loop above —
+ * but kept here rather than deleted, so turning it back on is a one-line
+ * change instead of rewriting it from scratch.
+ *
+ * LRCLIB — the only lyrics source MusiX has — gives one timestamp per
+ * *line*, never per word, and no lyrics format in use here carries real
+ * word-level timing either. There is nothing to read a true per-word time
+ * from. What this does instead: take the gap between this line's timestamp
+ * and the next line's, and split it proportionally by each word's character
+ * length, on the (usually reasonable) assumption that a longer word takes
+ * longer to sing. It looks like real karaoke timing most of the time, but
+ * it's a guess — a long pause or an ad-lib mid-line will drift it — which is
+ * why it only ever supplements the already-correct line-level highlight
+ * rather than replacing it.
+ *
+ * Isolated in its own component deliberately: the parent's `active` (line
+ * index) only changes once per line specifically to avoid re-rendering every
+ * line on every frame (see its own comment). Word position, by contrast,
+ * needs updating far more often — but only *this* line's words need to
+ * re-render for that, so the frequent updates live here, not in the parent.
+ */
+export function ActiveLineWords({
+  text,
+  startMs,
+  endMs,
+  effectivelyPlaying,
+  pausedPositionSec,
+  sourceVersion,
+}: {
+  text: string;
+  startMs: number;
+  /** Null for the last line — there's no next timestamp to bound a guess with. */
+  endMs: number | null;
+  effectivelyPlaying: boolean;
+  pausedPositionSec: number;
+  sourceVersion: number;
+}) {
+  // Captures literal whitespace as its own tokens, alternating with words, so
+  // re-joining them for render reproduces the original spacing exactly.
+  const tokens = useMemo(() => text.split(/(\s+)/), [text]);
+  const wordTokenIndices = useMemo(
+    () => tokens.reduce<number[]>((acc, token, i) => (token.trim() ? [...acc, i] : acc), []),
+    [tokens],
+  );
+
+  const [wordActive, setWordActive] = useState(-1);
+
+  useEffect(() => {
+    if (endMs === null || wordTokenIndices.length === 0) {
+      setWordActive(-1);
+      return;
+    }
+    const recompute = () =>
+      wordIndexAt(tokens, wordTokenIndices, startMs, endMs, currentPositionMs());
+
+    if (!effectivelyPlaying) {
+      setWordActive(recompute());
+      // `pausedPositionSec` / `sourceVersion` aren't read above — recompute()
+      // reads live state instead — they're here purely as triggers, exactly
+      // like the parent's own paused-tracking effect.
+      return;
+    }
+    let frame = 0;
+    const tick = () => {
+      setWordActive((current) => {
+        const next = recompute();
+        return current === next ? current : next;
+      });
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [tokens, wordTokenIndices, startMs, endMs, effectivelyPlaying, pausedPositionSec, sourceVersion]);
+
+  return (
+    <>
+      {tokens.map((token, i) => {
+        // `wordActive < 0` — no next line to bound a guess with, or the line
+        // hasn't started yet — leaves every word in the line's own colour
+        // (already set by the parent `<p>`), same as before this existed.
+        const className =
+          wordActive < 0 || !wordTokenIndices.includes(i)
+            ? undefined
+            : i <= wordActive
+              ? 'text-accent transition-colors'
+              : 'text-muted transition-colors';
+        return (
+          <span key={i} className={className}>
+            {token}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
+/** Which token in `tokens` is "active" at `positionMs`, or -1 before `startMs`. */
+function wordIndexAt(
+  tokens: string[],
+  wordTokenIndices: number[],
+  startMs: number,
+  endMs: number,
+  positionMs: number,
+): number {
+  if (positionMs <= startMs || wordTokenIndices.length === 0) return -1;
+
+  const weights = wordTokenIndices.map((i) => Math.max(1, tokens[i]!.length));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  const span = Math.max(1, endMs - startMs);
+  const fraction = Math.min(1, (positionMs - startMs) / span);
+  const target = fraction * totalWeight;
+
+  let cumulative = 0;
+  for (let w = 0; w < weights.length; w++) {
+    cumulative += weights[w]!;
+    if (target < cumulative) return wordTokenIndices[w]!;
+  }
+  return wordTokenIndices[wordTokenIndices.length - 1]!;
+}
