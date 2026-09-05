@@ -230,6 +230,24 @@ export interface Artwork {
   createdAt: number;
 }
 
+/**
+ * An artist photo fetched online, keyed by artist id (spec §32).
+ *
+ * Kept out of the `Artist` row itself: aggregates are wiped and rebuilt whole
+ * on every scan (see `replaceAggregates`), which would silently discard a
+ * fetched photo the next time the library rescans. This store is untouched by
+ * that rebuild, the same way `lyrics` survives a rescan independently of
+ * `tracks`.
+ */
+export interface ArtistPhoto {
+  /** Same id as the `Artist` row it belongs to. */
+  id: string;
+  /** Points into the shared `artwork` store — the image itself is deduped there. */
+  artworkId: string;
+  source: 'deezer';
+  updatedAt: number;
+}
+
 export type LyricsKind = 'plain' | 'lrc' | 'ttml';
 
 export interface LyricsLine {

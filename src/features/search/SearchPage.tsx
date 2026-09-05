@@ -17,6 +17,7 @@ import {
   type SearchResults,
 } from '@core/search';
 
+import { getCachedArtistPhoto } from '@core/artists/onlinePhoto';
 import { formatCount } from '@core/utils';
 import { useLibrary } from '@state/libraryStore';
 import { playerActions } from '@state/playerStore';
@@ -64,11 +65,38 @@ export function SearchPage() {
   const [searchingOnline, setSearchingOnline] =
     useState(false);
 
+  const [artistPhotos, setArtistPhotos] = useState<Map<string, string>>(new Map());
 
   useEffect(() => {
     inputRef.current?.focus();
     void searchSuggestions().then(setSuggestions);
   }, [revision]);
+
+  // Shows a photo already fetched from ArtistPage, if any — never fetches one
+  // itself (spec §4), and a lookup failure here can only ever leave the
+  // placeholder showing, never break the results themselves.
+  useEffect(() => {
+    if (results.artists.length === 0) {
+      setArtistPhotos(new Map());
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(results.artists.map((artist) => getCachedArtistPhoto(artist.id))).then(
+      (found) => {
+        if (cancelled) return;
+        setArtistPhotos(
+          new Map(
+            found
+              .map((artworkId, index) => [results.artists[index]!.id, artworkId] as const)
+              .filter((entry): entry is [string, string] => Boolean(entry[1])),
+          ),
+        );
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [results.artists]);
 
   // Debounce. The cleanup cancels a pending search when the query changes
   // again, so only the final keystroke does work.
@@ -258,9 +286,11 @@ export function SearchPage() {
                 onClick={() => navigate(`/artists/${artist.id}`)}
                 className="flex w-24 shrink-0 flex-col items-center gap-1.5 text-center"
               >
-                {/* Not `artist.artworkId` — see ArtistCard in ArtistsPage.tsx. */}
+                {/* Not `artist.artworkId` — see ArtistCard in ArtistsPage.tsx.
+                    `artistPhotos` holds any real photo already fetched from
+                    ArtistPage. */}
                 <Artwork
-                  artworkId={null}
+                  artworkId={artistPhotos.get(artist.id) ?? null}
                   name={artist.name}
                   size={80}
                   rounded="full"

@@ -2,14 +2,16 @@
  * Artist grid (spec §29).
  *
  * Artists have no artwork of their own in an offline library — nothing embeds
- * an artist photo — so the tile shows the cover of one of their albums, which
- * is both recognisable and honest about where it came from.
+ * an artist photo — so a tile falls back to `Artwork`'s stable-hued placeholder
+ * unless a real photo has already been fetched from ArtistPage (spec §32); this
+ * page only ever displays one, it never fetches on its own (spec §4).
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Users } from 'lucide-react';
 import { listArtists } from '@core/db/repositories/library';
+import { getCachedArtistPhotoMap } from '@core/artists/onlinePhoto';
 import { formatCount, formatDurationLong } from '@core/utils';
 import { useLibrary } from '@state/libraryStore';
 import { useSettings } from '@state/settingsStore';
@@ -25,6 +27,7 @@ export function ArtistsPage() {
   const revision = useLibrary((state) => state.revision);
   const gridSize = useSettings((state) => state.gridSize);
   const [artists, setArtists] = useState<Artist[]>([]);
+  const [photos, setPhotos] = useState<Map<string, string>>(new Map());
   const [sort, setSort] = useState<'name' | 'trackCount'>('name');
 
   useEffect(() => {
@@ -37,15 +40,27 @@ export function ArtistsPage() {
     };
   }, [sort, revision]);
 
+  // Never in the effect above: a photo-lookup failure must not be able to
+  // keep the artist grid itself from rendering.
+  useEffect(() => {
+    let cancelled = false;
+    void getCachedArtistPhotoMap().then((found) => {
+      if (!cancelled) setPhotos(found);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [revision]);
+
   const minTileWidth = TILE_WIDTH[gridSize];
   const rowHeight = minTileWidth + 48;
 
   const renderTile = useCallback(
     (index: number) => {
       const artist = artists[index];
-      return artist ? <ArtistCard artist={artist} /> : null;
+      return artist ? <ArtistCard artist={artist} photoArtworkId={photos.get(artist.id) ?? null} /> : null;
     },
-    [artists],
+    [artists, photos],
   );
 
   const header = useMemo(
@@ -91,7 +106,14 @@ export function ArtistsPage() {
   );
 }
 
-export function ArtistCard({ artist }: { artist: Artist }) {
+export function ArtistCard({
+  artist,
+  photoArtworkId = null,
+}: {
+  artist: Artist;
+  /** A real photo fetched from Deezer via ArtistPage, if one exists yet. */
+  photoArtworkId?: string | null;
+}) {
   const navigate = useNavigate();
 
   return (
@@ -105,11 +127,12 @@ export function ArtistCard({ artist }: { artist: Artist }) {
         {/* Never `artist.artworkId`: nothing in an audio file is a photo of the
             artist, only of an album — that field is really "one of their
             covers, arbitrarily", and showing it as if it were a portrait
-            reads as a wrong picture, not a missing one. `Artwork`'s own
-            placeholder (a stable-hued tile keyed by name) is the honest
-            choice until Phase 2's online metadata can bring in a real one. */}
+            reads as a wrong picture, not a missing one. `photoArtworkId` is a
+            real photo (see core/artists/onlinePhoto.ts); absent that, `Artwork`'s
+            own placeholder (a stable-hued tile keyed by name) is the honest
+            choice. */}
         <Artwork
-          artworkId={null}
+          artworkId={photoArtworkId}
           name={artist.name}
           rounded="full"
           className="aspect-square w-full shadow-card transition group-hover/card:brightness-110"

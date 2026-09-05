@@ -19,7 +19,7 @@
 import type { Migration, StoreDefinition } from './idb';
 
 export const DB_NAME = 'musix';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 export const Stores = {
   tracks: 'tracks',
@@ -30,6 +30,8 @@ export const Stores = {
   /** FileSystemDirectoryHandle objects, kept out of `sources` so those stay cloneable data. */
   handles: 'handles',
   artwork: 'artwork',
+  /** Online-fetched artist photos, keyed by artist id — see `ArtistPhoto`. */
+  artistPhotos: 'artistPhotos',
   lyrics: 'lyrics',
   playlists: 'playlists',
   playlistEntries: 'playlistEntries',
@@ -202,6 +204,8 @@ const SCHEMA_V1: StoreDefinition[] = [
   { name: Stores.settings, keyPath: 'key' },
 ];
 
+const SCHEMA_V2: StoreDefinition[] = [{ name: Stores.artistPhotos, keyPath: 'id' }];
+
 function createStores(db: IDBDatabase, definitions: StoreDefinition[]): void {
   for (const definition of definitions) {
     if (db.objectStoreNames.contains(definition.name)) continue;
@@ -219,5 +223,9 @@ export const MIGRATIONS: Migration[] = [
   {
     version: 1,
     up: (db) => createStores(db, SCHEMA_V1),
+  },
+  {
+    version: 2,
+    up: (db) => createStores(db, SCHEMA_V2),
   },
 ];

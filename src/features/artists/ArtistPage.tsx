@@ -6,18 +6,20 @@
  * (see core/library/importer.ts).
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ListPlus, Play, Shuffle, Users } from 'lucide-react';
+import { ImagePlus, ListPlus, Loader2, Play, Shuffle, Users } from 'lucide-react';
 import { albumsByArtist, getArtist } from '@core/db/repositories/library';
+import { fetchAndStoreArtistPhoto, getCachedArtistPhoto } from '@core/artists/onlinePhoto';
 import { tracksByArtist } from '@core/db/repositories/tracks';
 import { formatCount, formatDurationLong } from '@core/utils';
 import { useLibrary } from '@state/libraryStore';
 import { playerActions } from '@state/playerStore';
+import { useSettings } from '@state/settingsStore';
 import { useUi } from '@state/uiStore';
 import type { Album, Artist, Track } from '@core/types';
 import { Artwork } from '@ui/Artwork';
-import { Button, EmptyState, SectionHeader, Spinner } from '@ui/primitives';
+import { Button, EmptyState, IconButton, SectionHeader, Spinner } from '@ui/primitives';
 import { PageHeader, trackStats } from '@ui/PageHeader';
 import { TrackList } from '@ui/TrackList';
 import { AlbumCard } from '../albums/AlbumsPage';
@@ -27,26 +29,54 @@ export function ArtistPage() {
   const revision = useLibrary((state) => state.revision);
   const navigate = useNavigate();
   const openAddToPlaylist = useUi((state) => state.openAddToPlaylist);
+  const onlineArtworkEnabled = useSettings((state) => state.onlineArtwork);
+  const toast = useUi((state) => state.toast);
 
   const [artist, setArtist] = useState<Artist | null>(null);
   const [albums, setAlbums] = useState<Album[]>([]);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
+  const [photoArtworkId, setPhotoArtworkId] = useState<string | null>(null);
+  const [findingPhoto, setFindingPhoto] = useState(false);
 
+  // The one load that actually gates the page. A cached photo lookup used to
+  // ride along in this same Promise.all — if that lookup ever failed (a
+  // missing store on a half-migrated database, for example), the whole
+  // Promise.all rejected, nothing here ever ran, and the page spun forever.
+  // It is deliberately not here any more; see the photo effect below.
   useEffect(() => {
     if (!artistId) return;
     let cancelled = false;
     setLoading(true);
-    void Promise.all([
-      getArtist(artistId),
-      albumsByArtist(artistId),
-      tracksByArtist(artistId),
-    ]).then(([foundArtist, foundAlbums, foundTracks]) => {
-      if (cancelled) return;
-      setArtist(foundArtist ?? null);
-      setAlbums(foundAlbums);
-      setTracks(foundTracks);
-      setLoading(false);
+    Promise.all([getArtist(artistId), albumsByArtist(artistId), tracksByArtist(artistId)])
+      .then(([foundArtist, foundAlbums, foundTracks]) => {
+        if (cancelled) return;
+        setArtist(foundArtist ?? null);
+        setAlbums(foundAlbums);
+        setTracks(foundTracks);
+      })
+      .catch(() => {
+        if (!cancelled) setArtist(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artistId, revision]);
+
+  // A cached photo, if one has already been fetched. Kept in its own effect,
+  // off the critical path above: this is a nice-to-have, and must never be
+  // able to block the artist's own albums and tracks from showing up.
+  useEffect(() => {
+    if (!artistId) {
+      setPhotoArtworkId(null);
+      return;
+    }
+    let cancelled = false;
+    void getCachedArtistPhoto(artistId).then((found) => {
+      if (!cancelled) setPhotoArtworkId(found);
     });
     return () => {
       cancelled = true;
@@ -54,6 +84,30 @@ export function ArtistPage() {
   }, [artistId, revision]);
 
   const ids = useMemo(() => tracks.map((track) => track.id), [tracks]);
+
+  /**
+   * Look this artist up on Deezer.
+   *
+   * Only ever reached from a click, and only when "Online artwork" is on
+   * (spec §32) — nothing here runs on its own (spec §4).
+   */
+  const findPhotoNow = useCallback(async () => {
+    if (!artist) return;
+    setFindingPhoto(true);
+    try {
+      const found = await fetchAndStoreArtistPhoto(artist);
+      if (!found) {
+        toast(`No photo found for ${artist.name}.`, { kind: 'warn' });
+        return;
+      }
+      setPhotoArtworkId(found);
+      toast(`Found a photo for ${artist.name}.`, { kind: 'success' });
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Photo lookup failed.', { kind: 'error' });
+    } finally {
+      setFindingPhoto(false);
+    }
+  }, [artist, toast]);
 
   if (loading) {
     return (
@@ -80,15 +134,33 @@ export function ArtistPage() {
         eyebrow="Artist"
         title={artist.name}
         artwork={
-          // `artist.artworkId` is really "one of their album covers" — see
-          // ArtistsPage.tsx's ArtistCard for why that never belongs here.
-          <Artwork
-            artworkId={null}
-            name={artist.name}
-            full
-            rounded="full"
-            className="h-32 w-32 shadow-card sm:h-44 sm:w-44"
-          />
+          <div className="relative h-32 w-32 shrink-0 sm:h-44 sm:w-44">
+            {/* `artist.artworkId` is really "one of their album covers" — see
+                ArtistsPage.tsx's ArtistCard for why that never belongs here.
+                `photoArtworkId` is a real photo, fetched below. */}
+            <Artwork
+              artworkId={photoArtworkId}
+              name={artist.name}
+              full
+              rounded="full"
+              className="h-full w-full shadow-card"
+            />
+            {onlineArtworkEnabled && (
+              <IconButton
+                label={photoArtworkId ? 'Look for a different photo' : 'Find a photo online'}
+                size={32}
+                className="absolute bottom-1 right-1 border border-line bg-surface shadow-card"
+                disabled={findingPhoto}
+                onClick={() => void findPhotoNow()}
+              >
+                {findingPhoto ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <ImagePlus className="h-4 w-4" />
+                )}
+              </IconButton>
+            )}
+          </div>
         }
         stats={
           <span className="flex flex-wrap gap-x-2">

@@ -230,10 +230,9 @@ export function SettingsPage() {
           />
           <Toggle
             label="Online artwork"
-            description="Cover Art Archive. Arrives in Phase 2."
+            description="Deezer, for a real artist photo when you look one up from their page. Album-art lookup from Cover Art Archive arrives in Phase 2."
             checked={settings.onlineArtwork}
             onChange={(checked) => settings.patch({ onlineArtwork: checked })}
-            disabled
           />
           <Toggle
             label="Online lyrics for downloads"
