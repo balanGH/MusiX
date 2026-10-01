@@ -18,11 +18,12 @@
  */
 
 import { createLogger, describeError } from '../logger';
+import { API_ROOT } from '../net/apiBase';
 
 const log = createLogger('studio');
 
-/** Same-origin; vite.config.ts proxies /api to the local service in dev. */
-const API_BASE = '/api';
+/** Same-origin by default; vite.config.ts proxies /api to the local service. */
+const API_BASE = API_ROOT;
 
 /** The stems `htdemucs_6s` produces. The default model gives the first four. */
 export const STEM_NAMES = ['vocals', 'drums', 'bass', 'guitar', 'piano', 'other'] as const;
@@ -215,19 +216,22 @@ export async function waitForJob(
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
     const state = await getJob(jobId);
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     onUpdate(state);
     if (state.status === 'complete' || state.status === 'failed') return state;
 
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, 1500);
-      signal?.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          reject(new DOMException('Aborted', 'AbortError'));
-        },
-        { once: true },
-      );
+      // The listener is removed once the timer fires; otherwise every poll
+      // would leave one more behind on a long-lived signal.
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, 1500);
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 }

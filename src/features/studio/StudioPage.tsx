@@ -55,6 +55,21 @@ export function StudioPage() {
   const [busy, setBusy] = useState(false);
   const [recent, setRecent] = useState<Track[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+  // The job the current `separate()` call started — what Cancel must target.
+  // Not `active`, which can still be an earlier, finished job while the new
+  // one uploads; cancelling that deletes its stems.
+  const inFlightJobRef = useRef<string | null>(null);
+  const unmountedRef = useRef(false);
+
+  // Leaving the page stops polling; the job itself keeps running on the service
+  // and shows up under "Earlier separations" next time.
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+      abortRef.current?.abort();
+    };
+  }, []);
 
   // Probe once on mount. No polling: if the service starts later, the user can
   // press "Check again" — polling a service that is usually absent is exactly
@@ -80,6 +95,10 @@ export function StudioPage() {
     async (blob: Blob, filename: string, displayName: string) => {
       setBusy(true);
       setUploadFraction(0);
+      // Close whatever was open, so nothing below (Cancel included) can act on
+      // the previous job while this one uploads.
+      setActive(null);
+      inFlightJobRef.current = null;
       const controller = new AbortController();
       abortRef.current = controller;
 
@@ -90,6 +109,8 @@ export function StudioPage() {
           signal: controller.signal,
           onUploadProgress: setUploadFraction,
         });
+        // A reused job is an earlier, finished one: cancelling it would delete it.
+        if (!reused) inFlightJobRef.current = jobId;
 
         const finished = await waitForJob(
           jobId,
@@ -113,15 +134,22 @@ export function StudioPage() {
           );
         }
       } catch (error) {
+        if (unmountedRef.current) return;
         if (error instanceof DOMException && error.name === 'AbortError') {
+          // Drop the last polled state, or the progress panel stays up
+          // showing a job that no longer exists.
+          setActive(null);
           toast('Separation cancelled.', { kind: 'info' });
         } else {
           toast(error instanceof Error ? error.message : String(error), { kind: 'error' });
         }
       } finally {
-        abortRef.current = null;
-        setBusy(false);
-        setUploadFraction(0);
+        if (abortRef.current === controller) abortRef.current = null;
+        inFlightJobRef.current = null;
+        if (!unmountedRef.current) {
+          setBusy(false);
+          setUploadFraction(0);
+        }
       }
     },
     [selectedStems, toast],
@@ -272,8 +300,19 @@ export function StudioPage() {
                 job={active}
                 uploadFraction={uploadFraction}
                 onCancel={() => {
-                  abortRef.current?.abort();
-                  if (active) void cancelJob(active.jobId).catch(() => undefined);
+                  if (busy) {
+                    // Only ever the job this run started, never an earlier one.
+                    const jobId = inFlightJobRef.current;
+                    abortRef.current?.abort();
+                    if (jobId) void cancelJob(jobId).catch(() => undefined);
+                  } else if (active) {
+                    // Nothing running: this is a failed job, and Cancel dismisses it.
+                    void cancelJob(active.jobId)
+                      .then(() => listJobs())
+                      .then(setJobs)
+                      .catch(() => undefined);
+                    setActive(null);
+                  }
                 }}
               />
             )}

@@ -35,6 +35,7 @@ gets recorded in the comment tag, to match the reference files.
 
 from __future__ import annotations
 
+import glob
 import re
 import threading
 import unicodedata
@@ -64,6 +65,14 @@ import lyrics
 # ---------------------------------------------------------------------------
 
 jobs: dict[str, dict[str, Any]] = {}
+_jobs_lock = threading.Lock()
+
+#: Finished jobs kept for status/file requests; the oldest are dropped beyond it.
+MAX_DOWNLOAD_JOBS_KEPT = 50
+
+#: Downloads run on a small fixed pool rather than one thread each, so a burst
+#: of clicks queues instead of starting unbounded yt-dlp + FFmpeg processes.
+_download_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="musix-download")
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +89,39 @@ ILLEGAL_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 def music_url(video_id: str) -> str:
     return f"https://music.youtube.com/watch?v={video_id}"
+
+
+_YOUTUBE_WATCH_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
+
+
+def video_id_from(raw: str) -> str | None:
+    """The YouTube video id in `raw`, or None if it is not a plain video link.
+
+    Only a bare id, a `youtube.com/watch?v=` URL (www, m or music) or a
+    `youtu.be/<id>` short link is accepted. Handing yt-dlp an arbitrary URL
+    would let its generic extractor fetch anything — a router admin page, say —
+    on the caller's behalf.
+    """
+    raw = raw.strip()
+    if VIDEO_ID.match(raw):
+        return raw
+
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or parsed.port is not None:
+        return None
+    host = (parsed.hostname or "").lower()
+
+    if host in _YOUTUBE_WATCH_HOSTS and parsed.path == "/watch":
+        candidate = urllib.parse.parse_qs(parsed.query).get("v", [""])[0]
+    elif host == "youtu.be":
+        candidate = parsed.path.lstrip("/")
+    else:
+        return None
+
+    return candidate if VIDEO_ID.match(candidate) else None
 
 
 def _artist_list(info: dict[str, Any]) -> list[str]:
@@ -324,9 +366,9 @@ class _WriteMusicTags(yt_dlp.postprocessor.PostProcessor):
 # ---------------------------------------------------------------------------
 
 
-def _download_song(job_id: str, url: str, want_lyrics: bool = True) -> None:
-    jobs[job_id] = {
-        "status": "starting",
+def _new_job() -> dict[str, Any]:
+    return {
+        "status": "queued",
         "progress": 0,
         "title": None,
         "artist": None,
@@ -337,6 +379,25 @@ def _download_song(job_id: str, url: str, want_lyrics: bool = True) -> None:
         "lyrics": None,
         "error": None,
     }
+
+
+def _remove_partials(destination: Path, video_id: str) -> None:
+    """Delete what a failed download left behind under its `<id>.*` names.
+
+    `.part` fragments, the pre-conversion WebM/M4A and the thumbnail are all
+    written under the video id; the finished file is renamed away from it, so
+    this never touches a completed download.
+    """
+    for leftover in destination.glob(f"{glob.escape(video_id)}.*"):
+        try:
+            leftover.unlink()
+        except OSError:
+            pass
+
+
+def _download_song(job_id: str, video_id: str, want_lyrics: bool = True) -> None:
+    url = music_url(video_id)
+    jobs[job_id]["status"] = "starting"
 
     def progress_hook(data: dict[str, Any]) -> None:
         if data["status"] == "downloading":
@@ -392,8 +453,7 @@ def _download_song(job_id: str, url: str, want_lyrics: bool = True) -> None:
 
             info = ydl.extract_info(url, download=True)
 
-            video_id = str(info.get("id") or "")
-            downloaded = destination / f"{video_id}.mp3"
+            downloaded = destination / f"{str(info.get('id') or video_id)}.mp3"
 
             title = _clean_title(info)
             artists = _artist_list(info)
@@ -426,6 +486,7 @@ def _download_song(job_id: str, url: str, want_lyrics: bool = True) -> None:
             }
 
     except Exception as error:
+        _remove_partials(destination, video_id)
         jobs[job_id] = {
             "status": "error",
             "progress": 0,
@@ -484,15 +545,28 @@ def _rename_to_display_name(path: Path, title: str, artists: list[str]) -> Path:
         return path
 
 
-def start_download(url: str, want_lyrics: bool = True) -> str:
+def _prune_jobs() -> None:
+    """Keep the job table bounded, dropping the oldest *finished* jobs first."""
+    finished = [
+        job_id for job_id, job in jobs.items() if job["status"] in {"complete", "error"}
+    ]
+    excess = len(jobs) - MAX_DOWNLOAD_JOBS_KEPT
+    # Dicts keep insertion order, so the first entries are the oldest.
+    for job_id in finished[: max(excess, 0)]:
+        jobs.pop(job_id, None)
+
+
+def start_download(video_id: str, want_lyrics: bool = True) -> str:
+    """Queue a download of one YouTube video id (see `video_id_from`)."""
     job_id = uuid.uuid4().hex
 
-    thread = threading.Thread(
-        target=_download_song,
-        args=(job_id, url, want_lyrics),
-        daemon=True,
-    )
-    thread.start()
+    # Registered before the worker is scheduled, so a status request made the
+    # moment this returns finds the job instead of a 404.
+    with _jobs_lock:
+        _prune_jobs()
+        jobs[job_id] = _new_job()
+
+    _download_pool.submit(_download_song, job_id, video_id, want_lyrics)
 
     return job_id
 

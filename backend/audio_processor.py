@@ -121,11 +121,14 @@ async def separate(
     cancel_event: asyncio.Event,
 ) -> SeparationResult:
     """Run Demucs and collect the stems it produced."""
-    model, produced = config.stems_for(list(requested_stems))
+    requested = list(requested_stems)
+    model, _all_stems = config.stems_for(requested)
+    produced = config.kept_stems(requested)
     output_root = config.OUTPUT_DIR / job_id
     output_root.mkdir(parents=True, exist_ok=True)
 
-    device = config.torch_device()
+    # The first call imports torch; keep that off the event loop.
+    device = await asyncio.to_thread(config.torch_device)
 
     command = [
         sys.executable,

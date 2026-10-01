@@ -1,3 +1,5 @@
+import { API_ROOT } from '@core/net/apiBase';
+
 export interface OnlineSong {
     id: string;
     title: string;
@@ -32,14 +34,15 @@ export interface DownloadJob {
     error?: string | null;
 }
 
-const API_BASE = 'http://127.0.0.1:8000';
+/** Same `/api` base as the Studio client (proxied to the local service). */
+const API_BASE = API_ROOT;
 
 export async function searchOnline(
     query: string,
 ): Promise<OnlineSong[]> {
 
     const response = await fetch(
-        `${API_BASE}/api/online/search?q=${encodeURIComponent(query)}`,
+        `${API_BASE}/online/search?q=${encodeURIComponent(query)}`,
     );
 
     if (!response.ok) {
@@ -58,7 +61,7 @@ export async function startOnlineDownload(
 ): Promise<{ jobId: string }> {
 
     const response = await fetch(
-        `${API_BASE}/api/online/download`,
+        `${API_BASE}/online/download`,
         {
             method: 'POST',
 
@@ -76,9 +79,15 @@ export async function startOnlineDownload(
     );
 
     if (!response.ok) {
-        throw new Error(
-            `Download failed (${response.status})`,
-        );
+        let detail = `Download failed (${response.status})`;
+        try {
+            // e.g. a link the service refuses because it is not a YouTube video.
+            const body = (await response.json()) as { detail?: string };
+            if (typeof body.detail === 'string') detail = body.detail;
+        } catch {
+            // Not JSON; the status line is the best message available.
+        }
+        throw new Error(detail);
     }
 
     return response.json();
@@ -90,7 +99,7 @@ export async function getOnlineDownloadStatus(
 ): Promise<DownloadJob> {
 
     const response = await fetch(
-        `${API_BASE}/api/online/download/${jobId}`,
+        `${API_BASE}/online/download/${jobId}`,
     );
 
     if (!response.ok) {
@@ -116,7 +125,7 @@ export interface DownloadPath {
 export async function getDownloadPath(): Promise<DownloadPath> {
 
     const response = await fetch(
-        `${API_BASE}/api/online/download-path`,
+        `${API_BASE}/online/download-path`,
     );
 
     if (!response.ok) {
@@ -140,7 +149,7 @@ export async function setDownloadPath(
 ): Promise<DownloadPath> {
 
     const response = await fetch(
-        `${API_BASE}/api/online/download-path`,
+        `${API_BASE}/online/download-path`,
         {
             method: 'POST',
 
@@ -173,7 +182,7 @@ export async function getOnlineDownloadFile(
 ): Promise<File> {
 
     const response = await fetch(
-        `${API_BASE}/api/online/download/${jobId}/file`,
+        `${API_BASE}/online/download/${jobId}/file`,
     );
 
     if (!response.ok) {

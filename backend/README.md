@@ -16,11 +16,8 @@ pip install -r requirements.txt
 mkdir -p storage/uploads storage/outputs
 ```
 
-4. Set up environment variables in the root `.env` file:
-```env
-VITE_SUPABASE_URL=your_supabase_url
-VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
-```
+4. Optional: configure the service with `MUSIX_*` environment variables.
+   Every one has a default; see the root `.env.example`.
 
 ## Running
 
@@ -47,7 +44,6 @@ The first run will download the Demucs model (approximately 2GB). This is stored
 - **demucs**: AI audio separation
 - **yt-dlp**: YouTube download
 - **torch**: Deep learning framework
-- **supabase**: Database client
 - **python-multipart**: File upload support
 - **aiofiles**: Async file operations
 

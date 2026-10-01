@@ -106,7 +106,20 @@ export function StemMixer({ job }: { job: JobState }) {
       else channel.element.addEventListener('loadedmetadata', onReady, { once: true });
     }
 
+    // The clock reaching the end ends the mix: stop the rest, flip the
+    // transport back to Play and let the sync loop stop with it.
+    const clockElement = channels[0]?.element;
+    const onEnded = () => {
+      for (const channel of channels) channel.element.pause();
+      playingRef.current = false;
+      setPlaying(false);
+      setPosition(clockElement?.duration || 0);
+      notifyAudioSourceChanged();
+    };
+    clockElement?.addEventListener('ended', onEnded);
+
     return () => {
+      clockElement?.removeEventListener('ended', onEnded);
       cancelAnimationFrame(frameRef.current);
       for (const channel of channels) {
         channel.element.pause();
@@ -141,6 +154,9 @@ export function StemMixer({ job }: { job: JobState }) {
         setPosition(now);
         for (let i = 1; i < channels.length; i++) {
           const element = channels[i]!.element;
+          // Mid-seek, currentTime is already the target but playback is not;
+          // re-seeking then would just restart the seek every frame.
+          if (clock.element.seeking || element.seeking) continue;
           if (Math.abs(element.currentTime - now) > DRIFT_TOLERANCE_SEC) {
             element.currentTime = now;
           }
@@ -234,7 +250,8 @@ export function StemMixer({ job }: { job: JobState }) {
 
     // Align before starting, then start together.
     const clock = channelsRef.current[0];
-    const start = clock?.element.currentTime ?? 0;
+    // After the mix has ended, Play starts it again from the top.
+    const start = clock?.element.ended ? 0 : (clock?.element.currentTime ?? 0);
     for (const channel of channelsRef.current) channel.element.currentTime = start;
     await Promise.all(channelsRef.current.map((channel) => channel.element.play()));
     playingRef.current = true;

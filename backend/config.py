@@ -6,6 +6,7 @@ a different disk or switch to a GPU without editing code.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
@@ -46,9 +47,24 @@ def _read_settings() -> dict:
         return {}
 
 
+def write_atomically(path: Path, text: str) -> None:
+    """Replace `path` with `text` so a crash mid-write cannot leave it half-written.
+
+    The new content goes to a sibling temp file first; `os.replace` then swaps
+    it in, which is atomic on the same filesystem.
+    """
+    temp = path.with_name(f"{path.name}.tmp")
+    try:
+        temp.write_text(text, encoding="utf-8")
+        os.replace(temp, path)
+    except OSError:
+        temp.unlink(missing_ok=True)
+        raise
+
+
 def _write_settings(settings: dict) -> None:
     try:
-        SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        write_atomically(SETTINGS_FILE, json.dumps(settings, indent=2))
     except OSError:
         # A settings file that cannot be written is not worth failing a
         # download over; the choice simply will not survive a restart.
@@ -190,9 +206,22 @@ ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.environ.get(
         "MUSIX_ALLOWED_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173,"
+        # The Capacitor shells (iOS and Android WebViews respectively).
+        "capacitor://localhost,https://localhost",
     ).split(",")
     if origin.strip()
+]
+
+# Host names the service answers to. Anything else is refused, which is what
+# stops DNS rebinding: a page on evil.example that re-points its own name at
+# 127.0.0.1 still sends `Host: evil.example`. The Vite proxy forwards the
+# browser's own Host (`changeOrigin: false`), i.e. `localhost` or `127.0.0.1`.
+# Add a LAN name or address here only if you deliberately expose the service.
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.environ.get("MUSIX_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
+    if host.strip()
 ]
 
 
@@ -201,8 +230,14 @@ def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
+@functools.lru_cache(maxsize=1)
 def torch_device() -> str:
-    """Prefer CUDA when it is genuinely usable, else CPU."""
+    """Prefer CUDA when it is genuinely usable, else CPU.
+
+    Cached: the answer cannot change while the process runs, and the first call
+    imports torch, which takes seconds. Async callers should still make that
+    first call through `asyncio.to_thread` so it does not stall the event loop.
+    """
     override = os.environ.get("MUSIX_DEVICE")
     if override:
         return override
@@ -227,3 +262,14 @@ def stems_for(requested: list[str]) -> tuple[str, list[str]]:
     if wanted & {"guitar", "piano"}:
         return SIX_STEM_MODEL, SIX_STEMS
     return MODEL_NAME, FOUR_STEMS
+
+
+def kept_stems(requested: list[str]) -> list[str]:
+    """The stems a job keeps: the requested ones the chosen model produces.
+
+    Demucs always writes every stem of its model, but only the ones asked for
+    are encoded and kept. An empty or unrecognised request keeps them all.
+    """
+    _model, produced = stems_for(requested)
+    wanted = {stem.strip().lower() for stem in requested if stem.strip()}
+    return [name for name in produced if name in wanted] or produced
