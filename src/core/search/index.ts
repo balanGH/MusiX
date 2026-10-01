@@ -42,9 +42,17 @@ interface SearchIndex {
 
 let index: SearchIndex | null = null;
 let building: Promise<SearchIndex> | null = null;
+/**
+ * Bumped by every invalidation. A build that started before an invalidation
+ * must not publish its (now stale) result as the index, nor clear a newer
+ * build's `building` slot — without this a scan finishing mid-build left the
+ * pre-scan index in place until the next library change.
+ */
+let generation = 0;
 
 /** Called after any scan or metadata edit. */
 export function invalidateSearchIndex(): void {
+  generation++;
   index = null;
   building = null;
 }
@@ -57,7 +65,8 @@ async function ensureIndex(): Promise<SearchIndex> {
   if (index) return index;
   if (building) return building;
 
-  building = (async () => {
+  const buildGeneration = generation;
+  const build = (async () => {
     const started = Date.now();
     const entries: IndexEntry[] = [];
     await scanAllTracks((track) => {
@@ -70,13 +79,23 @@ async function ensureIndex(): Promise<SearchIndex> {
       return 'continue';
     });
     const built: SearchIndex = { entries, builtAt: Date.now() };
-    index = built;
-    building = null;
-    log.debug(`search index built: ${entries.length} tracks in ${Date.now() - started}ms`);
+    if (buildGeneration === generation) {
+      index = built;
+      building = null;
+      log.debug(`search index built: ${entries.length} tracks in ${Date.now() - started}ms`);
+    }
+    // A superseded build still answers the search that asked for it — its
+    // results are no worse than they'd have been a moment earlier — but the
+    // next search builds afresh.
     return built;
   })();
+  building = build;
+  // A failed build must not be cached, or every later search would reject.
+  build.catch(() => {
+    if (building === build) building = null;
+  });
 
-  return building;
+  return build;
 }
 
 export interface SearchResults {

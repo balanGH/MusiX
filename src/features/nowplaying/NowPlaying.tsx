@@ -8,7 +8,7 @@
  * at scan time, so this costs a database read, not an image analysis.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ChevronDown,
@@ -69,9 +69,17 @@ export function NowPlaying() {
   const onlineLyricsEnabled = useSettings((state) => state.onlineLyrics);
   const navigate = useNavigate();
 
-  const [lyrics, setLyrics] = useState<Lyrics | null>(null);
+  // Lyrics and the online lookup are both keyed to the track they belong to.
+  // An online lookup can outlive its track (Next, or an auto-advance, while it
+  // is in flight); keyed like this its result can never be shown on the
+  // track that happens to be playing when it lands.
+  const [lyricsEntry, setLyricsEntry] = useState<{ trackId: string; lyrics: Lyrics } | null>(null);
   const [showLyrics, setShowLyrics] = useState(false);
-  const [findingLyrics, setFindingLyrics] = useState(false);
+  const [findingLyricsFor, setFindingLyricsFor] = useState<string | null>(null);
+  const lyrics = lyricsEntry && lyricsEntry.trackId === track?.id ? lyricsEntry.lyrics : null;
+  const findingLyrics = findingLyricsFor !== null && findingLyricsFor === track?.id;
+  const currentTrackId = useRef<string | null>(null);
+  currentTrackId.current = track?.id ?? null;
   const [stemStatus, setStemStatus] = useState<StemStatus>({ kind: 'idle' });
   const [mixerOpen, setMixerOpen] = useState(false);
   const { dominant } = useArtwork(track?.artworkId ?? null, false);
@@ -155,12 +163,15 @@ export function NowPlaying() {
   // have them — no speculative reads (spec §4).
   useEffect(() => {
     if (!open || !track?.hasLyrics) {
-      setLyrics(null);
+      // Keep lyrics just fetched online for this track (the store's copy may
+      // still say `hasLyrics: false`); drop anything for another track.
+      setLyricsEntry((current) => (current && current.trackId === track?.id ? current : null));
       return;
     }
     let cancelled = false;
-    void getLyrics(track.id).then((found) => {
-      if (!cancelled) setLyrics(found ?? null);
+    const trackId = track.id;
+    void getLyrics(trackId).then((found) => {
+      if (!cancelled) setLyricsEntry(found ? { trackId, lyrics: found } : null);
     });
     return () => {
       cancelled = true;
@@ -175,20 +186,27 @@ export function NowPlaying() {
    */
   const findLyricsNow = useCallback(async () => {
     if (!track) return;
-    setFindingLyrics(true);
+    const trackId = track.id;
+    setFindingLyricsFor(trackId);
     try {
       const found = await fetchAndStoreLyrics(track);
       if (!found) {
         toast(`No lyrics found for “${track.title}”.`, { kind: 'warn' });
         return;
       }
-      setLyrics(found);
-      setShowLyrics(true);
-      toast(found.kind === 'lrc' ? 'Found synced lyrics.' : 'Found lyrics.', { kind: 'success' });
+      // Saved to the database for its own track either way; only shown if
+      // that track is still the one on screen.
+      if (currentTrackId.current === trackId) {
+        setLyricsEntry({ trackId, lyrics: found });
+        setShowLyrics(true);
+        toast(found.kind === 'lrc' ? 'Found synced lyrics.' : 'Found lyrics.', { kind: 'success' });
+      } else {
+        toast(`Found lyrics for “${track.title}”.`, { kind: 'success' });
+      }
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Lyrics lookup failed.', { kind: 'error' });
     } finally {
-      setFindingLyrics(false);
+      setFindingLyricsFor((current) => (current === trackId ? null : current));
     }
   }, [track, toast]);
 
@@ -203,7 +221,8 @@ export function NowPlaying() {
 
   return (
     <div
-      className="fixed inset-0 z-[55] flex flex-col animate-fade-in"
+      // `mx-safe-inset`: fixed, so it escapes the body's safe-area padding.
+      className="mx-safe-inset fixed inset-0 z-[55] flex flex-col animate-fade-in"
       style={{
         // Two stops of the artwork colour over the app background: enough to
         // feel like the album, never enough to hurt text contrast.

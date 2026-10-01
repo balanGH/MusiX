@@ -277,6 +277,83 @@ body {
 /* Utilities                                                                  */
 /* ------------------------------------------------------------------------- */
 
+/*
+ * Touch tap target. Small icon buttons in dense rows (30px) are fine for a
+ * mouse but under the 44px a fingertip needs. On touch devices this grows the
+ * hit area with an invisible pseudo-element, so the visual size — and the
+ * row's layout — does not change.
+ */
+@media (hover: none) {
+  .mx-tap {
+    position: relative;
+  }
+
+  .mx-tap::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+  }
+}
+
+/*
+ * Bottom chrome and the home indicator.
+ *
+ * Below `md` the tab bar is the bottom-most element and absorbs the inset;
+ * from `md` up there is no tab bar, so the player bar does. `env()` is 0 on
+ * desktop, so desktop sizes are unchanged.
+ */
+.mx-mobile-nav {
+  box-sizing: content-box;
+  height: var(--mx-nav-height);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.mx-player-bar {
+  height: var(--mx-player-height);
+}
+
+@media (min-width: 768px) {
+  .mx-player-bar {
+    box-sizing: content-box;
+    height: var(--mx-player-height);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* Toasts sit above the player bar — and, on narrow screens, the tab bar too. */
+.mx-toasts {
+  bottom: calc(var(--mx-player-height) + env(safe-area-inset-bottom) + 1rem);
+}
+
+@media (max-width: 767.98px) {
+  .mx-toasts {
+    bottom: calc(
+      var(--mx-player-height) + var(--mx-nav-height) + env(safe-area-inset-bottom) + 0.5rem
+    );
+  }
+}
+
+/* Full-screen overlays are `position: fixed`, so they escape the body's
+   safe-area padding and would otherwise sit under the notch. */
+.mx-safe-inset {
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+}
+
+/* Same, for overlays that already have their own padding (`p-4`). */
+.mx-safe-inset-p4 {
+  padding-top: calc(env(safe-area-inset-top) + 1rem);
+  padding-right: calc(env(safe-area-inset-right) + 1rem);
+  padding-bottom: calc(env(safe-area-inset-bottom) + 1rem);
+  padding-left: calc(env(safe-area-inset-left) + 1rem);
+}
+
 /* Two-line clamp for track titles in grid cards. */
 .mx-clamp-2 {
   display: -webkit-box;

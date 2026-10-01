@@ -6,7 +6,7 @@
  * shows those rules in plain language, so the membership is never mysterious.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ListMusic, Sparkles } from 'lucide-react';
 import {
@@ -36,35 +36,67 @@ export function PlaylistPage() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [entries, setEntries] = useState<PlaylistEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  // Every load takes a ticket; only the latest may write state. Without it,
+  // switching playlists quickly let the slower (older) read land last.
+  const loadTicket = useRef(0);
 
   const load = useCallback(async () => {
     if (!playlistId) return;
+    const ticket = ++loadTicket.current;
+    const current = () => ticket === loadTicket.current;
     setLoading(true);
-    const found = await getPlaylist(playlistId);
-    setPlaylist(found ?? null);
+    setFailed(false);
 
-    if (!found) {
-      setTracks([]);
-      setEntries([]);
-      setLoading(false);
-      return;
-    }
+    try {
+      const found = await getPlaylist(playlistId);
+      if (!current()) return;
 
-    if (found.kind === 'smart' && found.rules) {
-      setEntries([]);
-      setTracks(await materialiseSmartPlaylist(found.rules));
-    } else {
-      const found_entries = await playlistEntries(found.id);
-      setEntries(found_entries);
-      // Entry order is the playlist order, and `getTracks` preserves it.
-      setTracks(await getTracks(found_entries.map((entry) => entry.trackId)));
+      if (!found) {
+        setPlaylist(null);
+        setTracks([]);
+        setEntries([]);
+        return;
+      }
+
+      if (found.kind === 'smart' && found.rules) {
+        const matched = await materialiseSmartPlaylist(found.rules);
+        if (!current()) return;
+        setPlaylist(found);
+        setEntries([]);
+        setTracks(matched);
+      } else {
+        const foundEntries = await playlistEntries(found.id);
+        const foundTracks = await getTracks(foundEntries.map((entry) => entry.trackId));
+        if (!current()) return;
+        // `getTracks` drops ids whose track no longer exists, so keep only the
+        // entries that still have one. `entries[i]` and `tracks[i]` must stay
+        // the same row: removal maps a list index back to an entry, and an
+        // unaligned pair removed the wrong entry after a track was deleted.
+        const byId = new Map(foundTracks.map((track) => [track.id, track]));
+        const shown = foundEntries.filter((entry) => byId.has(entry.trackId));
+        setPlaylist(found);
+        setEntries(shown);
+        setTracks(shown.map((entry) => byId.get(entry.trackId)!));
+      }
+    } catch {
+      if (current()) setFailed(true);
+    } finally {
+      if (current()) setLoading(false);
     }
-    setLoading(false);
   }, [playlistId]);
 
   useEffect(() => {
     void load();
   }, [load, revision]);
+
+  // Invalidate any in-flight load when leaving the page.
+  useEffect(
+    () => () => {
+      loadTicket.current++;
+    },
+    [],
+  );
 
   const ids = useMemo(() => tracks.map((track) => track.id), [tracks]);
   const totalDuration = useMemo(
@@ -73,10 +105,16 @@ export function PlaylistPage() {
   );
 
   const removeAt = useCallback(
-    async (_trackId: string, index: number) => {
+    async (trackId: string, index: number) => {
       if (!playlist || playlist.kind === 'smart') return;
-      const entry = entries[index];
+      // Identify the entry, not just the position: the row index is only a
+      // hint, and must agree with the track the user acted on.
+      const hinted = entries[index];
+      const entry = hinted?.trackId === trackId ? hinted : entries.find((e) => e.trackId === trackId);
       if (!entry) return;
+      // Its position in the full playlist (which may include entries hidden
+      // because their track is gone), for Undo to restore it to.
+      const restoreAt = entry.position;
       await removePlaylistEntries(playlist.id, [entry.id]);
       toast('Removed from playlist.', {
         kind: 'success',
@@ -90,7 +128,11 @@ export function PlaylistPage() {
             );
             await addTracksToPlaylist(playlist.id, [entry.trackId]);
             const current = await playlistEntries(playlist.id);
-            await movePlaylistEntry(playlist.id, current.length - 1, index);
+            await movePlaylistEntry(
+              playlist.id,
+              current.length - 1,
+              Math.min(restoreAt, current.length - 1),
+            );
             await load();
           },
         },
@@ -105,6 +147,17 @@ export function PlaylistPage() {
       <div className="flex flex-1 items-center justify-center">
         <Spinner size={20} />
       </div>
+    );
+  }
+
+  if (failed) {
+    return (
+      <EmptyState
+        icon={<ListMusic className="h-8 w-8" />}
+        title="Couldn’t open this playlist"
+        body="Reading it from your library failed."
+        action={<Button onClick={() => void load()}>Try again</Button>}
+      />
     );
   }
 

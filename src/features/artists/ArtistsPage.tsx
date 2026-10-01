@@ -53,7 +53,8 @@ export function ArtistsPage() {
   }, [revision]);
 
   const minTileWidth = TILE_WIDTH[gridSize];
-  const rowHeight = minTileWidth + 48;
+  // Caption under the round photo: name plus the track-count line.
+  const captionHeight = 48;
 
   const renderTile = useCallback(
     (index: number) => {
@@ -89,7 +90,7 @@ export function ArtistsPage() {
     <VirtualGrid
       count={artists.length}
       minTileWidth={minTileWidth}
-      rowHeight={rowHeight}
+      captionHeight={captionHeight}
       renderTile={renderTile}
       header={header}
       ariaLabel="Artists"

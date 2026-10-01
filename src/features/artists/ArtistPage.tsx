@@ -6,7 +6,7 @@
  * (see core/library/importer.ts).
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ImagePlus, ListPlus, Loader2, Play, Shuffle, Trash2, Users } from 'lucide-react';
 import { albumsByArtist, getArtist } from '@core/db/repositories/library';
@@ -44,6 +44,19 @@ export function ArtistPage() {
   const [findingPhoto, setFindingPhoto] = useState(false);
   /** The remove button stays out of the way until the photo itself is tapped. */
   const [showRemove, setShowRemove] = useState(false);
+  /** The in-flight online lookup, cancelled when the page moves to another artist. */
+  const photoLookup = useRef<AbortController | null>(null);
+  /** Photos already offered for this artist, so "a different photo" really is one. */
+  const triedPhotos = useRef<string[]>([]);
+
+  useEffect(() => {
+    triedPhotos.current = [];
+    return () => {
+      photoLookup.current?.abort();
+      photoLookup.current = null;
+      setFindingPhoto(false);
+    };
+  }, [artistId]);
 
   // The one load that actually gates the page. A cached photo lookup used to
   // ride along in this same Promise.all — if that lookup ever failed (a
@@ -100,21 +113,42 @@ export function ArtistPage() {
    */
   const findPhotoNow = useCallback(async () => {
     if (!artist) return;
+    photoLookup.current?.abort();
+    const controller = new AbortController();
+    photoLookup.current = controller;
+    // Skip the photo on screen and every one already offered this visit.
+    const exclude = [...new Set([...triedPhotos.current, ...(photoArtworkId ? [photoArtworkId] : [])])];
     setFindingPhoto(true);
     try {
-      const found = await fetchAndStoreArtistPhoto(artist);
+      const found = await fetchAndStoreArtistPhoto(artist, {
+        excludeArtworkIds: exclude,
+        signal: controller.signal,
+      });
+      // Navigated to another artist meanwhile: this result is not for them.
+      if (controller.signal.aborted) return;
       if (!found) {
-        toast(`No photo found for ${artist.name}.`, { kind: 'warn' });
+        if (exclude.length > 0) {
+          // Every candidate has been offered; start the cycle over next time.
+          triedPhotos.current = photoArtworkId ? [photoArtworkId] : [];
+          toast(`No other photo found for ${artist.name}.`, { kind: 'info' });
+        } else {
+          toast(`No photo found for ${artist.name}.`, { kind: 'warn' });
+        }
         return;
       }
+      triedPhotos.current = [...exclude, found];
       setPhotoArtworkId(found);
       toast(`Found a photo for ${artist.name}.`, { kind: 'success' });
     } catch (error) {
+      if (controller.signal.aborted) return;
       toast(error instanceof Error ? error.message : 'Photo lookup failed.', { kind: 'error' });
     } finally {
-      setFindingPhoto(false);
+      if (photoLookup.current === controller) {
+        photoLookup.current = null;
+        setFindingPhoto(false);
+      }
     }
-  }, [artist, toast]);
+  }, [artist, photoArtworkId, toast]);
 
   /**
    * Undo a wrong match. Deezer's name matching is a best guess (see

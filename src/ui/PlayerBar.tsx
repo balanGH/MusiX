@@ -47,8 +47,9 @@ export function PlayerBar() {
 
   return (
     <div
-      className="relative z-30 flex shrink-0 items-center gap-3 border-t border-line bg-bg-elevated px-3 sm:px-4"
-      style={{ height: 'var(--mx-player-height)' }}
+      // `mx-player-bar` (tokens.css) sets the height and, from `md` up where
+      // there is no tab bar below it, the home-indicator inset.
+      className="mx-player-bar relative z-30 flex shrink-0 items-center gap-3 border-t border-line bg-bg-elevated px-3 sm:px-4"
     >
       {/* ---- Now playing ---- */}
       <div className="flex min-w-0 flex-1 items-center gap-3 sm:w-[30%] sm:flex-none">

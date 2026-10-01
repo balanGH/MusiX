@@ -58,8 +58,9 @@ export function Toasts() {
       // interrupt what the user is already hearing (spec §39).
       role="status"
       aria-live="polite"
-      className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-2"
-      style={{ bottom: 'calc(var(--mx-player-height) + 1rem)' }}
+      // `mx-toasts` (tokens.css) sets `bottom` so toasts clear the player bar,
+      // the mobile tab bar and the home-indicator inset.
+      className="mx-toasts pointer-events-none fixed right-4 z-[60] flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-2"
     >
       {toasts.map((toast) => (
         <ToastCard key={toast.id} toast={toast} onDismiss={() => dismiss(toast.id)} />
@@ -123,7 +124,7 @@ export function ConfirmDialog() {
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 p-4 animate-fade-in"
+      className="mx-safe-inset-p4 fixed inset-0 z-[70] flex items-center justify-center bg-black/55 animate-fade-in"
       onClick={(event) => {
         if (event.target === event.currentTarget) resolve(false);
       }}
@@ -229,7 +230,7 @@ export function AddToPlaylistDialog() {
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 p-4 animate-fade-in"
+      className="mx-safe-inset-p4 fixed inset-0 z-[70] flex items-center justify-center bg-black/55 animate-fade-in"
       onClick={(event) => {
         if (event.target === event.currentTarget) close();
       }}
@@ -323,11 +324,10 @@ export function MobileNav() {
   return (
     <nav
       aria-label="Main navigation"
-      className="z-30 flex shrink-0 items-stretch border-t border-line bg-bg-elevated md:hidden"
-      style={{
-        height: 'var(--mx-nav-height)',
-        paddingBottom: 'env(safe-area-inset-bottom)',
-      }}
+      // `mx-mobile-nav` (tokens.css): a content-box height plus the inset as
+      // padding, so the home indicator adds space below the tabs rather than
+      // squashing them.
+      className="mx-mobile-nav z-30 flex shrink-0 items-stretch border-t border-line bg-bg-elevated md:hidden"
     >
       {MOBILE_TABS.map((tab) => (
         <NavLink

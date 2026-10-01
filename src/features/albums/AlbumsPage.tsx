@@ -49,8 +49,9 @@ export function AlbumsPage() {
   }, [sort, revision]);
 
   const minTileWidth = TILE_WIDTH[gridSize];
-  // Tile height = square cover + two lines of caption.
-  const rowHeight = minTileWidth + 52;
+  // Caption under the square cover: two lines of title plus the artist line.
+  // The grid adds the cover itself, sized to the tile's actual width.
+  const captionHeight = 52;
 
   const renderTile = useCallback(
     (index: number) => {
@@ -94,7 +95,7 @@ export function AlbumsPage() {
     <VirtualGrid
       count={albums.length}
       minTileWidth={minTileWidth}
-      rowHeight={rowHeight}
+      captionHeight={captionHeight}
       renderTile={renderTile}
       header={header}
       ariaLabel="Albums"
@@ -132,7 +133,8 @@ export function AlbumCard({ album, className }: { album: Album; className?: stri
           />
         </button>
 
-        {/* Play overlay — appears on hover, always reachable by keyboard. */}
+        {/* Play overlay — appears on hover, always reachable by keyboard, and
+            always shown on touch screens, which have no hover to reveal it. */}
         <IconButton
           label={`Play ${album.name}`}
           size={38}
@@ -147,7 +149,7 @@ export function AlbumCard({ album, className }: { album: Album; className?: stri
               );
             }
           }}
-          className="absolute bottom-2 right-2 opacity-0 shadow-pop transition group-hover/card:opacity-100 focus-visible:opacity-100"
+          className="absolute bottom-2 right-2 opacity-0 shadow-pop transition group-hover/card:opacity-100 focus-visible:opacity-100 touch:opacity-100"
         >
           <Play className="ml-0.5 h-4 w-4 fill-current" />
         </IconButton>

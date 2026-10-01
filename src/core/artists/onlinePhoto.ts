@@ -82,15 +82,27 @@ function jsonp<T>(url: URL): Promise<T> {
   });
 }
 
-/** Best-matching Deezer artist for a name, preferring the most-followed hit. */
-async function searchDeezerArtist(name: string): Promise<DeezerArtist | null> {
+/**
+ * Deezer artists for a name, best match first: exact (normalised) name
+ * matches before the rest, and the most-followed first within each group.
+ * The ranked list, not just the winner, is what lets "Look for a different
+ * photo" move on to the next candidate.
+ */
+export async function searchDeezerArtists(name: string): Promise<DeezerArtist[]> {
   const url = new URL('https://api.deezer.com/search/artist');
   url.searchParams.set('q', name);
-  url.searchParams.set('limit', '5');
+  url.searchParams.set('limit', '10');
 
   const result = await jsonp<{ data?: DeezerArtist[]; error?: unknown }>(url);
-  const candidates = result.data ?? [];
-  if (candidates.length === 0) return null;
+  return rankDeezerArtists(name, result.data ?? []);
+}
+
+/** Pure ranking half of `searchDeezerArtists`, exported for tests. */
+export function rankDeezerArtists<T extends { name: string; nb_fan?: number }>(
+  name: string,
+  candidates: readonly T[],
+): T[] {
+  if (candidates.length === 0) return [];
 
   // Deezer's own catalogue is inconsistent in two ways that matter here:
   // a name can carry stray whitespace ("Dhanush " for the real match on a
@@ -115,11 +127,25 @@ async function searchDeezerArtist(name: string): Promise<DeezerArtist | null> {
   // actually populates for these profiles, so it stays the tiebreaker.
   const normalize = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
   const target = normalize(name);
+  const byFans = (a: T, b: T) => (b.nb_fan ?? 0) - (a.nb_fan ?? 0);
   const exact = candidates.filter((candidate) => normalize(candidate.name) === target);
-  const pool = exact.length > 0 ? exact : candidates;
-  return pool.reduce((best, candidate) =>
-    (candidate.nb_fan ?? 0) > (best.nb_fan ?? 0) ? candidate : best,
-  );
+  const rest = candidates.filter((candidate) => normalize(candidate.name) !== target);
+  return [...exact.sort(byFans), ...rest.sort(byFans)];
+}
+
+function abortError(): Error {
+  return new DOMException('Photo lookup was cancelled', 'AbortError');
+}
+
+export interface FetchArtistPhotoOptions {
+  /**
+   * Artwork ids not to settle on — the photo currently shown, plus any
+   * already offered. Candidates whose image hashes to one of these are
+   * skipped, so asking again yields a *different* photo when there is one.
+   */
+  excludeArtworkIds?: readonly string[];
+  /** Aborting stops the lookup before anything is stored. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -157,39 +183,69 @@ export async function getCachedArtistPhotoMap(): Promise<Map<string, string>> {
  * stored `ArtistPhoto` row is what makes the result show up again on the next
  * visit without a repeat lookup.
  */
-export async function fetchAndStoreArtistPhoto(artist: Artist): Promise<string | null> {
-  const match = await searchDeezerArtist(artist.name);
-  const pictureUrl = match?.picture_big ?? match?.picture_medium;
-  if (!pictureUrl) {
-    log.info(`no Deezer photo found for ${artist.name}`);
-    return null;
+export async function fetchAndStoreArtistPhoto(
+  artist: Artist,
+  options: FetchArtistPhotoOptions = {},
+): Promise<string | null> {
+  const { signal } = options;
+  const exclude = new Set(options.excludeArtworkIds ?? []);
+
+  const candidates = await searchDeezerArtists(artist.name);
+  if (signal?.aborted) throw abortError();
+
+  // The same picture URL can appear on several duplicate profiles.
+  const seenUrls = new Set<string>();
+  let lastError: unknown = null;
+
+  for (const candidate of candidates) {
+    const pictureUrl = candidate.picture_big ?? candidate.picture_medium;
+    if (!pictureUrl || seenUrls.has(pictureUrl)) continue;
+    seenUrls.add(pictureUrl);
+
+    try {
+      const response = await fetch(pictureUrl, signal ? { signal } : undefined);
+      if (!response.ok) throw new Error(`Photo download returned ${response.status}`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const mime = response.headers.get('content-type') || 'image/jpeg';
+
+      const processed = await processArtwork({ mime, pictureType: 8, description: '', data: bytes });
+      if (signal?.aborted) throw abortError();
+      if (!processed) throw new Error('Downloaded photo could not be decoded');
+      // Deezer serves one generic silhouette for every profile without a
+      // photo, so hashing is also what skips a repeat of that placeholder.
+      if (exclude.has(processed.artwork.id)) continue;
+
+      await putArtwork(processed.artwork);
+      if (signal?.aborted) throw abortError();
+
+      const photo: ArtistPhoto = {
+        id: artist.id,
+        artworkId: processed.artwork.id,
+        source: 'deezer',
+        updatedAt: Date.now(),
+      };
+      await putArtistPhoto(photo);
+
+      log.info(`stored a photo for ${artist.name}`);
+      return photo.artworkId;
+    } catch (error) {
+      if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
+        throw error;
+      }
+      // One bad candidate (a 404, an undecodable image) shouldn't end the
+      // search while others remain.
+      lastError = error;
+    }
   }
 
-  const response = await fetch(pictureUrl);
-  if (!response.ok) throw new Error(`Photo download returned ${response.status}`);
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  const mime = response.headers.get('content-type') || 'image/jpeg';
-
-  const processed = await processArtwork({ mime, pictureType: 8, description: '', data: bytes });
-  if (!processed) throw new Error('Downloaded photo could not be decoded');
-
-  await putArtwork(processed.artwork);
-
-  const photo: ArtistPhoto = {
-    id: artist.id,
-    artworkId: processed.artwork.id,
-    source: 'deezer',
-    updatedAt: Date.now(),
-  };
-  await putArtistPhoto(photo);
-
-  log.info(`stored a photo for ${artist.name}`);
-  return photo.artworkId;
+  if (lastError) throw lastError;
+  log.info(`no ${exclude.size > 0 ? 'other ' : ''}Deezer photo found for ${artist.name}`);
+  return null;
 }
 
 /**
  * Remove a fetched photo — the matcher is a best guess (see
- * `searchDeezerArtist` above) and sometimes picks the wrong person; this
+ * `rankDeezerArtists` above) and sometimes picks the wrong person; this
  * undoes that, reverting the artist back to the honest placeholder.
  */
 export async function removeArtistPhoto(artistId: string): Promise<void> {

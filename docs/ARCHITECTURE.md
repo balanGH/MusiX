@@ -214,12 +214,17 @@ branch, not in the branch name.
 Listed so they are decisions rather than omissions. Full detail in
 [STATUS.md](STATUS.md).
 
-- **Online metadata and artwork** (§10, §13). The switches exist in Settings,
-  default off, and are disabled with the reason shown. Phase 2.
+- **Online metadata** (§10, §13) — MusicBrainz / Cover Art Archive matching.
+  Phase 2. What *is* in, each opt-in and only on a click: lyrics from LRCLIB and
+  artist photos from Deezer, both fetched straight from the browser.
+- **Backend URL.** The optional local service (stems, downloader) is reached
+  only through `src/core/net/apiBase.ts`: same-origin `/api` by default,
+  overridable with `VITE_MUSIX_API_BASE` for builds that can't proxy.
 - **Tag writing and file reorganisation** (§11, §12). See above.
 - **Waveform editor and multi-track timeline** (§20, §21). The Studio page says
   plainly that its mixer is a mixer, not a DAW. Phase 5.
-- **Download manager** (§25, §26). Phase 7.
+- **Full download manager** (§25, §26). Phase 7. A basic yt-dlp downloader
+  through the local service exists; a managed queue does not.
 
 The rule from spec §41 was applied throughout: no button exists that does
 nothing, and no feature is faked. Where something is missing, the UI says what

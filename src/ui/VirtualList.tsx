@@ -21,6 +21,7 @@ import {
   type ReactNode,
 } from 'react';
 import { cx } from './primitives';
+import { computeGridLayout, contentBoxWidth } from './gridLayout';
 
 /** Rows rendered beyond the viewport, so fast scrolling does not show gaps. */
 const DEFAULT_OVERSCAN = 6;
@@ -176,8 +177,12 @@ export interface VirtualGridProps {
   count: number;
   /** Minimum tile width; the column count is derived from the container. */
   minTileWidth: number;
-  /** Tile height including its caption. */
-  rowHeight: number;
+  /**
+   * Height of the caption under each tile's square cover. The row height is
+   * derived from the actual tile width plus this, since tiles stretch to fill
+   * the row.
+   */
+  captionHeight: number;
   gap?: number;
   renderTile(index: number): ReactNode;
   header?: ReactNode;
@@ -197,7 +202,7 @@ export interface VirtualGridProps {
 export function VirtualGrid({
   count,
   minTileWidth,
-  rowHeight,
+  captionHeight,
   gap = 16,
   renderTile,
   header,
@@ -216,9 +221,12 @@ export function VirtualGrid({
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
-    const observer = new ResizeObserver(() => setWidth(element.clientWidth));
+    // The content box, not `clientWidth`: tiles are laid out inside the
+    // container's padding, so counting the padding spilled the last column.
+    const read = () => setWidth(contentBoxWidth(element));
+    const observer = new ResizeObserver(read);
     observer.observe(element);
-    setWidth(element.clientWidth);
+    read();
     return () => observer.disconnect();
   }, []);
 
@@ -234,9 +242,13 @@ export function VirtualGrid({
     return () => observer.disconnect();
   }, [header]);
 
-  const columns = Math.max(1, Math.floor((width + gap) / (minTileWidth + gap)));
+  const { columns, tileWidth, tileHeight, stride } = computeGridLayout(
+    width,
+    minTileWidth,
+    gap,
+    captionHeight,
+  );
   const rowCount = Math.ceil(count / columns);
-  const stride = rowHeight + gap;
 
   const range = useMemo(() => {
     if (count === 0 || height === 0) return { startRow: 0, endRow: 0 };
@@ -258,7 +270,6 @@ export function VirtualGrid({
     for (let column = 0; column < columns; column++) {
       const index = row * columns + column;
       if (index >= count) break;
-      const tileWidth = (width - gap * (columns - 1)) / columns;
       tiles.push(
         <div
           key={index}
@@ -267,7 +278,7 @@ export function VirtualGrid({
             top: row * stride,
             left: column * (tileWidth + gap),
             width: tileWidth,
-            height: rowHeight,
+            height: tileHeight,
           }}
         >
           {renderTile(index)}
@@ -314,37 +325,58 @@ export function useWindowedRecords<T>(
 } {
   const [records, setRecords] = useState<Map<string, T>>(new Map());
   const requested = useRef(new Set<string>());
+  // The window currently on screen. Pruning must never evict these: nothing
+  // would re-request them until the range changed, so they'd sit as skeletons.
+  const visible = useRef(new Set<string>());
+  // Bumped with each new id list, so a fetch for the old list can't land in
+  // the new one's cache.
+  const generation = useRef(0);
 
   // A new id list (different sort, different page) invalidates everything.
   useEffect(() => {
+    generation.current++;
     requested.current = new Set();
+    visible.current = new Set();
     setRecords(new Map());
   }, [ids]);
 
   const onRangeChange = useCallback(
     (start: number, end: number) => {
-      const wanted = ids.slice(start, end).filter((id) => !requested.current.has(id));
+      const inView = ids.slice(start, end);
+      visible.current = new Set(inView);
+      const wanted = inView.filter((id) => !requested.current.has(id));
       if (wanted.length === 0) return;
       for (const id of wanted) requested.current.add(id);
+      const requestGeneration = generation.current;
 
-      void fetch(wanted).then((fetched) => {
-        setRecords((current) => {
-          const next = new Map(current);
-          for (const record of fetched) next.set(identify(record), record);
-          // Prune oldest insertions once the cache is oversized. Map preserves
-          // insertion order, so the head is the coldest.
-          if (next.size > cacheLimit) {
-            const excess = next.size - cacheLimit;
-            let removed = 0;
-            for (const key of next.keys()) {
-              if (removed++ >= excess) break;
-              next.delete(key);
-              requested.current.delete(key);
+      void fetch(wanted).then(
+        (fetched) => {
+          if (requestGeneration !== generation.current) return;
+          setRecords((current) => {
+            const next = new Map(current);
+            for (const record of fetched) next.set(identify(record), record);
+            // Prune oldest insertions once the cache is oversized. Map preserves
+            // insertion order, so the head is the coldest — except for rows on
+            // screen right now, which are skipped however old they are.
+            if (next.size > cacheLimit) {
+              let excess = next.size - cacheLimit;
+              for (const key of [...next.keys()]) {
+                if (excess <= 0) break;
+                if (visible.current.has(key)) continue;
+                next.delete(key);
+                requested.current.delete(key);
+                excess--;
+              }
             }
-          }
-          return next;
-        });
-      });
+            return next;
+          });
+        },
+        () => {
+          // A failed read must be retryable when the rows come back into view.
+          if (requestGeneration !== generation.current) return;
+          for (const id of wanted) requested.current.delete(id);
+        },
+      );
     },
     [ids, fetch, identify, cacheLimit],
   );

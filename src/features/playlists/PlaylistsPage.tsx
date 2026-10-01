@@ -215,7 +215,7 @@ function PlaylistCard({
             label={`Delete ${playlist.name}`}
             size={30}
             onClick={onDelete}
-            className="shrink-0 opacity-0 group-hover/pl:opacity-100 focus-visible:opacity-100"
+            className="mx-tap shrink-0 opacity-0 group-hover/pl:opacity-100 focus-visible:opacity-100 touch:opacity-100"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </IconButton>

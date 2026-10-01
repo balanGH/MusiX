@@ -209,7 +209,7 @@ function QueueRow({
         label={`Remove ${track?.title ?? 'track'} from the queue`}
         size={24}
         onClick={() => playerActions.removeFromQueue(item.uid)}
-        className="shrink-0 opacity-0 group-hover/queue:opacity-100 focus-visible:opacity-100"
+        className="mx-tap shrink-0 opacity-0 group-hover/queue:opacity-100 focus-visible:opacity-100 touch:opacity-100"
       >
         <X className="h-3 w-3" />
       </IconButton>
