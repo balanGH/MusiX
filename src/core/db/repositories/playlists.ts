@@ -158,6 +158,52 @@ export async function removePlaylistEntries(
   await refreshPlaylistStats(playlistId);
 }
 
+/**
+ * Which playlists hold a track, as playlistId -> how many times.
+ *
+ * One index read, so the add-to-playlist sheet can tick every playlist the
+ * song is already in without loading each playlist.
+ */
+export async function playlistsContaining(trackId: string): Promise<Map<string, number>> {
+  const entries = await getAll<PlaylistEntry>(await getDb(), Stores.playlistEntries, {
+    index: Idx.playlistEntries.track,
+    query: trackId,
+  });
+  const counts = new Map<string, number>();
+  for (const entry of entries) counts.set(entry.playlistId, (counts.get(entry.playlistId) ?? 0) + 1);
+  return counts;
+}
+
+/**
+ * Remove every occurrence of a track from one playlist.
+ *
+ * Returns the positions it held, so Undo can put each one back where it was.
+ */
+export async function removeTrackFromPlaylist(
+  playlistId: string,
+  trackId: string,
+): Promise<number[]> {
+  const doomed = (await playlistEntries(playlistId)).filter((entry) => entry.trackId === trackId);
+  await removePlaylistEntries(
+    playlistId,
+    doomed.map((entry) => entry.id),
+  );
+  return doomed.map((entry) => entry.position);
+}
+
+/** Re-insert a track at the given positions (lowest first), undoing a removal. */
+export async function restoreTrackToPlaylist(
+  playlistId: string,
+  trackId: string,
+  positions: readonly number[],
+): Promise<void> {
+  for (const position of [...positions].sort((a, b) => a - b)) {
+    await addTracksToPlaylist(playlistId, [trackId]);
+    const last = (await playlistEntries(playlistId)).length - 1;
+    await movePlaylistEntry(playlistId, last, Math.min(position, last));
+  }
+}
+
 /** Move one entry to a new index, shifting the rest. */
 export async function movePlaylistEntry(
   playlistId: string,

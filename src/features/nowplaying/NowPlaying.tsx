@@ -15,6 +15,7 @@ import {
   ChevronUp,
   Heart,
   ListMusic,
+  ListPlus,
   Mic2,
   Pause,
   Play,
@@ -61,6 +62,7 @@ export function NowPlaying() {
   const open = useUi((state) => state.nowPlayingOpen);
   const setOpen = useUi((state) => state.setNowPlaying);
   const setQueueOpen = useUi((state) => state.setQueueOpen);
+  const openAddToPlaylist = useUi((state) => state.openAddToPlaylist);
   const track = usePlayer((state) => state.track);
   const status = usePlayer((state) => state.status);
   const shuffle = usePlayer((state) => state.queue.shuffle);
@@ -392,6 +394,15 @@ export function NowPlaying() {
               onClick={() => void playerActions.setFavorite(track.id, !track.favorite)}
             >
               <Heart className={cx('h-[18px] w-[18px]', track.favorite && 'fill-current')} />
+            </IconButton>
+
+            <IconButton
+              label="Save to playlist"
+              title="Add to, or remove from, your playlists"
+              size={38}
+              onClick={() => openAddToPlaylist([track.id])}
+            >
+              <ListPlus className="h-[18px] w-[18px]" />
             </IconButton>
 
             <IconButton

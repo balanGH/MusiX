@@ -28,6 +28,7 @@ import { TrackList } from '@ui/TrackList';
 export function PlaylistPage() {
   const { playlistId } = useParams<{ playlistId: string }>();
   const revision = useLibrary((state) => state.revision);
+  const playlistsRevision = useUi((state) => state.playlistsRevision);
   const navigate = useNavigate();
   const toast = useUi((state) => state.toast);
   const openAddToPlaylist = useUi((state) => state.openAddToPlaylist);
@@ -41,11 +42,13 @@ export function PlaylistPage() {
   // switching playlists quickly let the slower (older) read land last.
   const loadTicket = useRef(0);
 
-  const load = useCallback(async () => {
+  // `quiet` reloads in place (no spinner), for changes made elsewhere while
+  // this page is already showing, e.g. from the add-to-playlist sheet.
+  const load = useCallback(async (quiet = false) => {
     if (!playlistId) return;
     const ticket = ++loadTicket.current;
     const current = () => ticket === loadTicket.current;
-    setLoading(true);
+    if (!quiet) setLoading(true);
     setFailed(false);
 
     try {
@@ -90,6 +93,14 @@ export function PlaylistPage() {
     void load();
   }, [load, revision]);
 
+  // Skip the first run: the effect above already does the initial load.
+  const seenPlaylistsRevision = useRef(playlistsRevision);
+  useEffect(() => {
+    if (seenPlaylistsRevision.current === playlistsRevision) return;
+    seenPlaylistsRevision.current = playlistsRevision;
+    void load(true);
+  }, [load, playlistsRevision]);
+
   // Invalidate any in-flight load when leaving the page.
   useEffect(
     () => () => {
@@ -133,11 +144,11 @@ export function PlaylistPage() {
               current.length - 1,
               Math.min(restoreAt, current.length - 1),
             );
-            await load();
+            await load(true);
           },
         },
       });
-      await load();
+      await load(true);
     },
     [playlist, entries, toast, load],
   );

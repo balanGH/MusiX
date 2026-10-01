@@ -43,6 +43,11 @@ export interface UiState {
   confirm: ConfirmRequest | null;
   /** Tracks awaiting a playlist choice; null when the picker is closed. */
   addToPlaylistFor: string[] | null;
+  /**
+   * Bumped whenever playlist contents change from outside a playlist page
+   * (the add-to-playlist sheet), so open playlist views know to reload.
+   */
+  playlistsRevision: number;
 
   toast(message: string, options?: { kind?: ToastKind; action?: Toast['action']; durationMs?: number }): string;
   dismissToast(id: string): void;
@@ -53,6 +58,7 @@ export interface UiState {
   resolveConfirm(confirmed: boolean): void;
   openAddToPlaylist(trackIds: readonly string[]): void;
   closeAddToPlaylist(): void;
+  playlistsChanged(): void;
 }
 
 const DEFAULT_DURATION: Record<ToastKind, number> = {
@@ -71,6 +77,7 @@ export const useUi = create<UiState>()((set, get) => ({
   mobileNavOpen: false,
   confirm: null,
   addToPlaylistFor: null,
+  playlistsRevision: 0,
 
   toast(message, options = {}) {
     const kind = options.kind ?? 'info';
@@ -130,6 +137,10 @@ export const useUi = create<UiState>()((set, get) => ({
 
   closeAddToPlaylist() {
     set({ addToPlaylistFor: null });
+  },
+
+  playlistsChanged() {
+    set((state) => ({ playlistsRevision: state.playlistsRevision + 1 }));
   },
 }));
 

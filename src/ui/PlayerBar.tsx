@@ -14,6 +14,7 @@ import { useState } from 'react';
 import {
   Heart,
   ListMusic,
+  ListPlus,
   Maximize2,
   Pause,
   Play,
@@ -77,6 +78,7 @@ export function PlayerBar() {
               <div className="truncate text-xs text-muted">{track.artist}</div>
             </div>
             <FavoriteButton trackId={track.id} favorite={track.favorite} />
+            <SaveToPlaylistButton trackId={track.id} />
           </>
         ) : (
           <div className="flex items-center gap-3">
@@ -244,6 +246,21 @@ function FavoriteButton({ trackId, favorite }: { trackId: string; favorite: bool
       onClick={() => void playerActions.setFavorite(trackId, !favorite)}
     >
       <Heart className={cx('h-4 w-4', favorite && 'fill-current')} />
+    </IconButton>
+  );
+}
+
+/** Opens the playlist checklist for the current track: add, remove, or both. */
+function SaveToPlaylistButton({ trackId }: { trackId: string }) {
+  const openAddToPlaylist = useUi((state) => state.openAddToPlaylist);
+  return (
+    <IconButton
+      label="Save to playlist"
+      size={32}
+      className="hidden shrink-0 sm:inline-flex"
+      onClick={() => openAddToPlaylist([trackId])}
+    >
+      <ListPlus className="h-4 w-4" />
     </IconButton>
   );
 }

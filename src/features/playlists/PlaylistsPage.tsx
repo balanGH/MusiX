@@ -22,6 +22,7 @@ export function PlaylistsPage() {
   const navigate = useNavigate();
   const toast = useUi((state) => state.toast);
   const confirm = useUi((state) => state.requestConfirm);
+  const playlistsRevision = useUi((state) => state.playlistsRevision);
 
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [loading, setLoading] = useState(true);
@@ -35,7 +36,7 @@ export function PlaylistsPage() {
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, playlistsRevision]);
 
   const create = async () => {
     const trimmed = name.trim();
