@@ -9,7 +9,9 @@
 
 import { create } from 'zustand';
 import { countAlbums, countArtists, countFolders, listSources } from '@core/db/repositories/library';
-import { countTracks, favoriteCount } from '@core/db/repositories/tracks';
+import { countTracks, favoriteCount, trackIdsBySource } from '@core/db/repositories/tracks';
+import { pruneMissingEntries } from '@core/db/repositories/playlists';
+import { rebuildAggregates } from '@core/library/importer';
 import { getSource, putSource, removeSource } from '@core/db/repositories/library';
 import { requestPersistentStorage } from '@core/db/database';
 import { createLogger, describeError } from '@core/logger';
@@ -42,6 +44,35 @@ import type { MusicSource, ScanRecord } from '@core/types';
 const DOWNLOADS_SOURCE_ID = hashId('musix:downloads-source');
 
 const log = createLogger('library.store');
+
+/**
+ * One scan at a time keeps the disk and the UI sane. The flag is module state,
+ * set synchronously on entry — `state.scan` only fills in on the first progress
+ * message, so guarding on it let a second scan start in the gap.
+ */
+let scanRunning = false;
+/**
+ * Scans requested while another was running, one per source, drained in order
+ * afterwards. Dropping them instead meant a download imported mid-scan was
+ * copied into OPFS but never indexed.
+ */
+const scanQueue = new Map<string, { mode: 'incremental' | 'full'; waiters: (() => void)[] }>();
+
+function idleProgress(sourceId: string): ScanProgress {
+  return {
+    sourceId,
+    phase: 'listing',
+    filesSeen: 0,
+    processed: 0,
+    total: 0,
+    added: 0,
+    updated: 0,
+    skipped: 0,
+    removed: 0,
+    failed: 0,
+    currentPath: '',
+  };
+}
 
 export interface LibraryCounts {
   tracks: number;
@@ -277,8 +308,21 @@ export const useLibrary = create<LibraryState>()((set, get) => ({
   },
 
   async scanSource(sourceId, mode = 'incremental') {
-    if (get().scan) return; // One scan at a time keeps the disk and the UI sane.
-    set({ scan: null, error: null });
+    if (scanRunning) {
+      // Resolves once the queued scan has actually run, so callers such as
+      // `importDownloadedFile` still see the track indexed when they resume.
+      return new Promise<void>((resolve) => {
+        const queued = scanQueue.get(sourceId);
+        if (queued) {
+          if (mode === 'full') queued.mode = 'full';
+          queued.waiters.push(resolve);
+        } else {
+          scanQueue.set(sourceId, { mode, waiters: [resolve] });
+        }
+      });
+    }
+    scanRunning = true;
+    set({ scan: idleProgress(sourceId), error: null });
 
     try {
       const record = await runScan(sourceId, {
@@ -306,6 +350,19 @@ export const useLibrary = create<LibraryState>()((set, get) => ({
         return;
       }
       set({ scan: null, error: describeError(error) });
+    } finally {
+      scanRunning = false;
+      const next = scanQueue.entries().next();
+      if (!next.done) {
+        const [nextId, queued] = next.value;
+        scanQueue.delete(nextId);
+        // Synchronous up to its own `scanRunning = true`, so nothing can slip in.
+        void get()
+          .scanSource(nextId, queued.mode)
+          .finally(() => {
+            for (const resolve of queued.waiters) resolve();
+          });
+      }
     }
   },
 
@@ -323,9 +380,16 @@ export const useLibrary = create<LibraryState>()((set, get) => ({
     const source = get().sources.find((candidate) => candidate.id === sourceId);
     if (!source) return;
     try {
+      // Captured before the rows go, so playlist entries pointing at them can
+      // be pruned afterwards.
+      const removedTrackIds = await trackIdsBySource(sourceId);
       await disposeSource(source);
       await removeSource(sourceId);
       unregisterProvider(sourceId);
+      // Albums/artists are derived caches; without a rebuild the removed
+      // source's albums and artists linger as empty ghosts.
+      await rebuildAggregates();
+      await pruneMissingEntries(removedTrackIds);
       set((state) => ({
         sources: state.sources.filter((candidate) => candidate.id !== sourceId),
         needsPermission: state.needsPermission.filter((candidate) => candidate.id !== sourceId),

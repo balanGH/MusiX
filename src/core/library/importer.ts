@@ -101,7 +101,7 @@ function accumulateAlbum(albums: Map<string, AlbumAcc>, track: Track): void {
       id: track.albumId,
       name: track.album,
       albumArtist: track.albumArtist,
-      albumArtistId: track.artistIds[0] ?? '',
+      albumArtistId: albumArtistIdOf(track),
       year: track.year,
       genres: new Set(track.genres),
       trackCount: 1,
@@ -130,6 +130,21 @@ function accumulateAlbum(albums: Map<string, AlbumAcc>, track: Track): void {
   if (track.addedAt > existing.addedAt) existing.addedAt = track.addedAt;
   // One lossy track makes the album not losslessly complete.
   if (!track.lossless) existing.lossless = false;
+}
+
+/**
+ * The album's artist page: the album-artist credit (which `buildTrack` already
+ * falls back to the track artist), not the first *track* artist — otherwise a
+ * "Various Artists" compilation lands on whichever guest happened to be
+ * scanned first. Must be one of `track.artistIds` so the page exists.
+ */
+function albumArtistIdOf(track: Track): string {
+  const primary = splitArtists(track.albumArtist)[0];
+  if (primary) {
+    const id = artistIdFor(primary);
+    if (track.artistIds.includes(id)) return id;
+  }
+  return track.artistIds[0] ?? '';
 }
 
 function accumulateArtists(artists: Map<string, ArtistAcc>, track: Track): void {

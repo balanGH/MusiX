@@ -23,7 +23,7 @@
 import { getDb } from '../db/database';
 import { Idx, Stores } from '../db/schema';
 import { putArtworkBatch, knownArtworkIds } from '../db/repositories/artwork';
-import { putLyricsBatch } from '../db/repositories/lyrics';
+import { getLyricsMap, putLyricsBatch } from '../db/repositories/lyrics';
 import { putScan, trimScans } from '../db/repositories/scans';
 import { getTracks, deleteTracks, putTracks } from '../db/repositories/tracks';
 import { pruneMissingEntries } from '../db/repositories/playlists';
@@ -249,6 +249,10 @@ export async function scanSource(
       pending.map((file) => file.existingId).filter((id): id is string => id !== null),
     );
     const existingById = new Map(existingRows.map((track) => [track.id, track]));
+    // Lyrics the user saved or fetched online belong to the user, not the
+    // file: a rescan must neither overwrite them with embedded text nor reset
+    // `hasLyrics` because the file itself carries none.
+    const storedLyrics = await getLyricsMap(existingRows.map((track) => track.id));
     const artworkSeen = await knownArtworkIds();
 
     let trackBatch: Track[] = [];
@@ -309,8 +313,10 @@ export async function scanSource(
           }
 
           // ---- Lyrics ----
-          let hasLyrics = false;
-          if (parsed.tags.lyrics) {
+          const stored = storedLyrics.get(trackId);
+          const userLyrics = stored !== undefined && stored.source !== 'embedded';
+          let hasLyrics = stored !== undefined;
+          if (parsed.tags.lyrics && !userLyrics) {
             lyricsBatch.push(lyricsFromTag(trackId, parsed.tags.lyrics));
             hasLyrics = true;
           }

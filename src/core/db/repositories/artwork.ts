@@ -10,7 +10,7 @@
 import { getDb } from '../database';
 import { get as getOne, getAll, putMany, removeMany, request, withTransaction } from '../idb';
 import { Stores } from '../schema';
-import type { Artwork, Track } from '../../types';
+import type { ArtistPhoto, Artwork, Track } from '../../types';
 
 export async function getArtwork(id: string): Promise<Artwork | undefined> {
   return getOne<Artwork>(await getDb(), Stores.artwork, id);
@@ -41,7 +41,7 @@ export async function knownArtworkIds(): Promise<Set<string>> {
 }
 
 /**
- * Delete artwork no track references any more.
+ * Delete artwork no track (or fetched artist photo) references any more.
  *
  * Only invoked from Settings → Storage, never automatically: walking every
  * track to prove an image is unreferenced is exactly the kind of speculative
@@ -50,9 +50,15 @@ export async function knownArtworkIds(): Promise<Set<string>> {
 export async function pruneOrphanArtwork(): Promise<{ deleted: number; freedBytes: number }> {
   const db = await getDb();
   const referenced = new Set<string>();
-  await withTransaction(db, Stores.tracks, 'readonly', async (tx) => {
-    const tracks = await request<Track[]>(tx.objectStore(Stores.tracks).getAll());
+  await withTransaction(db, [Stores.tracks, Stores.artistPhotos], 'readonly', async (tx) => {
+    const [tracks, photos] = await Promise.all([
+      request<Track[]>(tx.objectStore(Stores.tracks).getAll()),
+      // Deezer artist photos live in the same content-addressed store; no
+      // track points at them, so they must be counted explicitly.
+      request<ArtistPhoto[]>(tx.objectStore(Stores.artistPhotos).getAll()),
+    ]);
     for (const track of tracks) if (track.artworkId) referenced.add(track.artworkId);
+    for (const photo of photos) referenced.add(photo.artworkId);
   });
 
   const all = await getAll<Artwork>(db, Stores.artwork);

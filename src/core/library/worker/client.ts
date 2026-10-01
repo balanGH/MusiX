@@ -19,6 +19,7 @@ import { capabilities } from '../../platform/capabilities';
 import { restoreDirectorySource } from '../../platform/directorySource';
 import { providerFor } from '../../platform';
 import { getSource, listSources, putSource } from '../../db/repositories/library';
+import { trackIdsBySource } from '../../db/repositories/tracks';
 import { invalidateSearchIndex } from '../../search';
 import { uid } from '../../utils';
 import { scanSource, type ScanProgress } from '../scanner';
@@ -35,6 +36,8 @@ interface PendingScan {
 
 let worker: Worker | null = null;
 const pending = new Map<string, PendingScan>();
+/** In-thread (no-Worker) scans, so `cancelScan` can reach them too. */
+const inThread = new Set<AbortController>();
 
 function ensureWorker(): Worker | null {
   if (!capabilities().workers) return null;
@@ -127,10 +130,13 @@ export async function runScan(
   // Search results and the source's own counters both derive from what just
   // changed, so they are refreshed here rather than by every reader.
   invalidateSearchIndex();
+  // Counted from the store rather than `trackCount + added - removed`: the
+  // delta form double-counts whenever two scans of a source overlap.
+  const trackCount = (await trackIdsBySource(source.id)).length;
   await putSource({
     ...source,
     lastScanAt: record.finishedAt ?? Date.now(),
-    trackCount: Math.max(0, source.trackCount + record.added - record.removed),
+    trackCount,
   });
 
   return record;
@@ -143,7 +149,17 @@ async function dispatch(source: MusicSource, options: RunScanOptions): Promise<S
   if (!host) {
     const provider = await providerFor(source);
     if (!provider) throw new Error(`“${source.name}” could not be opened.`);
-    return scanSource(provider, { mode, onProgress: options.onProgress });
+    const controller = new AbortController();
+    inThread.add(controller);
+    try {
+      return await scanSource(provider, {
+        mode,
+        onProgress: options.onProgress,
+        signal: controller.signal,
+      });
+    } finally {
+      inThread.delete(controller);
+    }
   }
 
   const requestId = uid('scan');
@@ -188,6 +204,7 @@ async function handleFor(source: MusicSource): Promise<FileSystemDirectoryHandle
 
 /** Ask the worker to stop; the scan resolves with a `cancelled` record. */
 export function cancelScan(): void {
+  for (const controller of inThread) controller.abort();
   if (!worker) return;
   for (const requestId of pending.keys()) {
     const message: ScanWorkerRequest = { type: 'cancel', requestId };
@@ -196,7 +213,7 @@ export function cancelScan(): void {
 }
 
 export function scanInProgress(): boolean {
-  return pending.size > 0;
+  return pending.size > 0 || inThread.size > 0;
 }
 
 /** Scan every source in turn, returning one record each. */

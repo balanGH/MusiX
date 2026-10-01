@@ -37,12 +37,22 @@ export async function listAlbums(
   direction: 'asc' | 'desc' = 'asc',
 ): Promise<Album[]> {
   const db = await getDb();
-  const index =
-    sort === 'year'
-      ? Idx.albums.year
-      : sort === 'addedAt'
-        ? Idx.albums.addedAt
-        : Idx.albums.sortName;
+  if (sort === 'year') {
+    // The `year` index is sparse — albums without a year aren't in it — so
+    // read the primary store and sort in memory, keeping undated albums last
+    // in either direction.
+    const albums = await getAll<Album>(db, Stores.albums);
+    const sign = direction === 'asc' ? 1 : -1;
+    return albums.sort((a, b) => {
+      if (a.year === null || b.year === null) {
+        if (a.year !== b.year) return a.year === null ? 1 : -1;
+      } else if (a.year !== b.year) {
+        return sign * (a.year - b.year);
+      }
+      return a.sortName.localeCompare(b.sortName);
+    });
+  }
+  const index = sort === 'addedAt' ? Idx.albums.addedAt : Idx.albums.sortName;
   const albums = await getAll<Album>(db, Stores.albums, { index });
   // Albums number in the thousands, not the hundred-thousands, so a secondary
   // in-memory sort is cheaper than maintaining compound indexes for each order.

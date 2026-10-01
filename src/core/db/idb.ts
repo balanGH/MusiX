@@ -141,6 +141,9 @@ export async function withTransaction<T>(
 ): Promise<T> {
   const tx = db.transaction(stores, mode);
   const done = transactionDone(tx);
+  // If `body` throws we abort and rethrow its error; `done` then rejects too,
+  // and without a handler that becomes an unhandled rejection.
+  done.catch(() => undefined);
   let result: T;
   try {
     result = await body(tx);
