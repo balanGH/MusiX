@@ -330,3 +330,40 @@ export function pruneMissing(state: QueueState, existingTrackIds: ReadonlySet<st
   const missing = state.items.filter((item) => !existingTrackIds.has(item.trackId));
   return missing.reduce((next, item) => removeItem(next, item.uid), state);
 }
+
+/**
+ * Rebuild a queue from a saved session, dropping tracks that no longer exist.
+ *
+ * The saved cursor is resolved to the item it pointed at *before* anything is
+ * dropped, so removing earlier tracks does not shift playback onto the wrong
+ * one; if the current track itself is gone, the next surviving one takes over.
+ */
+export function restoreQueue(
+  saved: {
+    items: readonly QueueItem[];
+    order?: readonly number[] | null;
+    cursor: number;
+    shuffle: boolean;
+    shuffleSeed: number;
+    repeat: RepeatMode;
+  },
+  existingTrackIds: ReadonlySet<string>,
+): QueueState {
+  const items = [...saved.items];
+  const storedOrder = saved.order;
+  const validOrder =
+    storedOrder?.length === items.length &&
+    new Set(storedOrder).size === items.length &&
+    storedOrder.every((index) => Number.isInteger(index) && index >= 0 && index < items.length);
+  const order = validOrder ? [...storedOrder] : identityOrder(items.length);
+  const cursor = items.length === 0 ? -1 : Math.min(Math.max(saved.cursor, 0), order.length - 1);
+  const state: QueueState = {
+    items,
+    order,
+    cursor,
+    shuffle: saved.shuffle,
+    shuffleSeed: saved.shuffleSeed,
+    repeat: saved.repeat,
+  };
+  return pruneMissing(state, existingTrackIds);
+}

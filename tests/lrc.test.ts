@@ -113,3 +113,13 @@ describe('building the stored record', () => {
     expect(lyrics.text).toBe('Just\nsome\nwords');
   });
 });
+
+describe('language tag', () => {
+  it('reads [la:] as metadata, not as a lyric line, and stores it', () => {
+    const text = `[la: en]\n${SAMPLE}`;
+    const parsed = parseLrc(text);
+    expect(parsed.metadata.la).toBe('en');
+    expect(parsed.lines.some((line) => line.text.includes('la:'))).toBe(false);
+    expect(lyricsFromTag('track-3', text).language).toBe('en');
+  });
+});

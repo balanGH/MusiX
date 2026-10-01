@@ -23,6 +23,35 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 }
 
+/**
+ * True when focus is on a control that gives Space or the arrow keys a meaning
+ * of its own — a button activates on Space, a menu moves with the arrows.
+ */
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return (
+    target.closest(
+      'button, a[href], summary, [role="button"], [role="menuitem"], [role="menuitemcheckbox"], ' +
+        '[role="menuitemradio"], [role="option"], [role="tab"], [role="slider"], [role="checkbox"], ' +
+        '[role="radio"], [role="switch"], [role="listbox"], [role="menu"]',
+    ) !== null
+  );
+}
+
+/** True when focus is inside an open menu, which owns every key it receives. */
+function isInMenu(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('[role="menu"]') !== null;
+}
+
+/** A modal dialog owns the keyboard while it is open. */
+function isDialogOpen(): boolean {
+  return (
+    document.querySelector(
+      '[role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open]',
+    ) !== null
+  );
+}
+
 export interface Shortcut {
   keys: string;
   description: string;
@@ -56,27 +85,39 @@ export function useKeyboardShortcuts(): void {
         return;
       }
 
+      // Something closer to the focus (a menu, a list, a dialog) has already
+      // handled this key.
+      if (event.defaultPrevented) return;
       if (isTypingTarget(event.target)) return;
       if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (isDialogOpen() || isInMenu(event.target)) return;
 
       const ui = useUi.getState();
+
+      // Space and the arrows are the keys focused controls use themselves.
+      const ownKey = event.key === ' ' || event.key.startsWith('Arrow');
+      if (ownKey && isInteractiveTarget(event.target)) return;
 
       switch (event.key) {
         case ' ':
           event.preventDefault();
+          if (event.repeat) return;
           void playerActions.toggle();
           return;
 
         case 'ArrowRight':
           event.preventDefault();
-          if (event.shiftKey) void playerActions.next();
-          else nudgeSeek(5);
+          // Holding Shift+→ would otherwise fire a burst of overlapping skips.
+          if (event.shiftKey) {
+            if (!event.repeat) void playerActions.next();
+          } else nudgeSeek(5);
           return;
 
         case 'ArrowLeft':
           event.preventDefault();
-          if (event.shiftKey) void playerActions.previous();
-          else nudgeSeek(-5);
+          if (event.shiftKey) {
+            if (!event.repeat) void playerActions.previous();
+          } else nudgeSeek(-5);
           return;
 
         case 'ArrowUp':

@@ -98,6 +98,13 @@ export class AudioEngine {
   private status: PlaybackStatus = 'idle';
   private lastError: string | null = null;
   private nearEndFired = false;
+  /**
+   * Bumped by every `load()` and `stop()`, so an older load that resumes after
+   * an await can tell it has been superseded and must not touch the deck.
+   */
+  private loadSeq = 0;
+  /** Bumped by every play/pause request; a `play()` waiting on the context checks it. */
+  private transportSeq = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly listeners = new Map<keyof EngineEvents, Set<Listener<never>>>();
 
@@ -205,6 +212,8 @@ export class AudioEngine {
     options: { autoplay?: boolean; startAtSec?: number } = {},
   ): Promise<void> {
     const { context, decks } = this.ensureGraph();
+    const seq = ++this.loadSeq;
+    const transport = this.transportSeq;
     const deck = decks[this.active]!;
     const other = decks[this.active === 0 ? 1 : 0]!;
 
@@ -224,13 +233,16 @@ export class AudioEngine {
     if (options.startAtSec && options.startAtSec > 0) {
       // Seeking before metadata arrives is silently ignored by the element.
       await waitForMetadata(deck.element);
+      // A newer load has replaced this deck's file in the meantime.
+      if (seq !== this.loadSeq) return;
       deck.element.currentTime = options.startAtSec;
     }
 
     deck.element.playbackRate = this.rate;
     this.applyPreservesPitch(deck.element);
 
-    if (options.autoplay !== false) {
+    // A pause pressed while metadata loaded wins over the autoplay request.
+    if (options.autoplay !== false && transport === this.transportSeq) {
       await this.play();
     } else {
       this.setStatus('paused');
@@ -268,14 +280,17 @@ export class AudioEngine {
 
     claimAudioSource('player');
     const fade = this.crossfadeSec;
+    const seq = this.loadSeq;
     try {
       next.element.playbackRate = this.rate;
       this.applyPreservesPitch(next.element);
       await next.element.play();
     } catch (error) {
-      log.warn('handoff play() rejected', error);
+      if (!isAbortError(error)) log.warn('handoff play() rejected', error);
       return false;
     }
+    // A load or stop while `play()` was pending owns the decks now.
+    if (seq !== this.loadSeq) return false;
 
     this.applyDeckGain(next, 1, fade);
     if (current) {
@@ -303,16 +318,23 @@ export class AudioEngine {
     // rather than in each of those entry points.
     claimAudioSource('player');
     this.cancelIdleSuspend();
+    const seq = ++this.transportSeq;
 
     if (this.context.state === 'suspended') {
       await this.context.resume().catch((error) => log.warn('context resume failed', error));
+      // Pause (or another play) was pressed while the context woke up.
+      if (seq !== this.transportSeq || deck !== this.currentDeck) return;
     }
 
     try {
       this.applyDeckGain(deck, 1, 0.02);
       await deck.element.play();
+      if (seq !== this.transportSeq) return;
       this.setStatus('playing');
     } catch (error) {
+      // An interrupted play() — pause, or a new file assigned — rejects with
+      // AbortError. That is not a failure; whoever interrupted owns the state.
+      if (isAbortError(error)) return;
       // Autoplay policy, or the file vanished mid-load.
       this.fail(deckTrackId(deck), describeError(error));
     }
@@ -321,7 +343,12 @@ export class AudioEngine {
   pause(): void {
     const deck = this.currentDeck;
     if (!deck) return;
+    this.transportSeq++;
     deck.element.pause();
+    // Mid-crossfade the outgoing deck is still audible; pausing only the
+    // incoming one would leave its tail playing. Its scheduled stop still
+    // releases it; pausing an idle, merely preloaded deck is harmless.
+    this.idleDeck?.element.pause();
     this.setStatus('paused');
     this.scheduleIdleSuspend();
   }
@@ -334,6 +361,8 @@ export class AudioEngine {
   /** Stop, release both decks and let the context suspend. */
   stop(): void {
     if (!this.decks) return;
+    this.loadSeq++;
+    this.transportSeq++;
     for (const deck of this.decks) this.stopDeck(deck);
     this.setStatus('idle');
     this.scheduleIdleSuspend();
@@ -411,6 +440,9 @@ export class AudioEngine {
   }
 
   setReplayGain(mode: ReplayGainMode, preventClipping = true): void {
+    // Re-applying the gain cancels any ramp in progress, so an unrelated
+    // settings write must not cut a crossfade short.
+    if (mode === this.replayGainMode && preventClipping === this.preventClipping) return;
     this.replayGainMode = mode;
     this.preventClipping = preventClipping;
     if (!this.decks) return;
@@ -598,11 +630,15 @@ export class AudioEngine {
   /** Fire `nearEnd` once, so the controller can start the next track. */
   private checkNearEnd(deck: Deck): void {
     if (this.nearEndFired) return;
+    // A seek while paused also fires `timeupdate`; only real playback may
+    // start the handoff, or seeking near the end would begin the next track.
+    if (deck.element.paused || this.status !== 'playing') return;
     const duration = deck.element.duration;
     if (!Number.isFinite(duration) || duration <= 0) return;
 
     const remaining = duration - deck.element.currentTime;
-    const lead = Math.max(this.crossfadeSec, HANDOFF_LEAD_SEC);
+    // `remaining` is media time; at 2x speed a 5 s crossfade needs 10 s of it.
+    const lead = Math.max(this.crossfadeSec, HANDOFF_LEAD_SEC) * this.rate;
     if (remaining <= lead && remaining > 0) {
       this.nearEndFired = true;
       const trackId = deckTrackId(deck);
@@ -705,6 +741,11 @@ export class AudioEngine {
     clearTimeout(this.idleTimer);
     this.idleTimer = null;
   }
+}
+
+/** The rejection `play()` gives when a pause or a new `src` interrupts it. */
+function isAbortError(error: unknown): boolean {
+  return (error as { name?: unknown } | null)?.name === 'AbortError';
 }
 
 /**

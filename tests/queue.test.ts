@@ -183,3 +183,43 @@ describe('inspection', () => {
     expect(queue.repeat).toBe('off');
   });
 });
+
+describe('restoring a saved session', () => {
+  const saved = (cursor: number, order?: number[]) => {
+    const queue = Q.createQueue(TRACKS, { startIndex: cursor });
+    return {
+      items: queue.items,
+      order: order ?? queue.order,
+      cursor,
+      shuffle: false,
+      shuffleSeed: 1,
+      repeat: 'off' as const,
+    };
+  };
+
+  it('stays on the saved track when earlier tracks were removed', () => {
+    // Cursor 4 was 'e'; with 'a' and 'b' gone a clamp would land on 'g'.
+    const restored = Q.restoreQueue(saved(4), new Set(['c', 'd', 'e', 'f', 'g', 'h']));
+    expect(Q.currentTrackId(restored)).toBe('e');
+    expect(Q.queueLength(restored)).toBe(6);
+  });
+
+  it('moves to the next surviving track when the saved one is gone', () => {
+    const restored = Q.restoreQueue(saved(2), new Set(['a', 'b', 'd', 'e']));
+    expect(Q.currentTrackId(restored)).toBe('d');
+  });
+
+  it('keeps a shuffled play order through the remap', () => {
+    const order = [7, 3, 5, 0, 1, 2, 4, 6];
+    const restored = Q.restoreQueue(saved(2, order), new Set(['a', 'c', 'd', 'f', 'h']));
+    // Play order was h d f a b c e g; without b, e, g it is h d f a c.
+    expect(playOrder(restored)).toEqual(['h', 'd', 'f', 'a', 'c']);
+    expect(Q.currentTrackId(restored)).toBe('f');
+  });
+
+  it('falls back to the visible order when the saved order is corrupt', () => {
+    const restored = Q.restoreQueue(saved(1, [0, 0, 1]), new Set(TRACKS));
+    expect(playOrder(restored)).toEqual(TRACKS);
+    expect(Q.currentTrackId(restored)).toBe('b');
+  });
+});
