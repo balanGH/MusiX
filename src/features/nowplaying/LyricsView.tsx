@@ -18,26 +18,123 @@ import {
   seekActiveSource,
 } from '@core/audio/exclusivity';
 import { activeLyricIndex } from '@core/lyrics/lrc';
+import { assignVoices, hasVoices, type LyricsVoice, type VoicedText } from '@core/lyrics/voices';
 import { player } from '@core/playback/controller';
 import { usePlayer, usePlayerPosition } from '@state/playerStore';
 import type { Lyrics } from '@core/types';
 import { cx } from '@ui/primitives';
 
 export function LyricsView({ lyrics }: { lyrics: Lyrics }) {
-  if (!lyrics.lines || lyrics.lines.length === 0) {
+  if (!lyrics.lines || lyrics.lines.length === 0) return <PlainLyrics text={lyrics.text} />;
+  return <SyncedLyrics lyrics={lyrics} />;
+}
+
+// ---------------------------------------------------------------------------
+// Singers (male / female / both), when the lyric file marks them
+// ---------------------------------------------------------------------------
+
+const VOICE_LABEL: Record<LyricsVoice, string> = {
+  male: 'Male',
+  female: 'Female',
+  duet: 'Both',
+};
+
+/** Male lines sit left, female right, shared lines centred, as duet sheets do. */
+const VOICE_ALIGN: Record<LyricsVoice, string> = {
+  male: 'text-left',
+  female: 'text-right',
+  duet: 'text-center',
+};
+
+const VOICE_COLOUR: Record<LyricsVoice, string> = {
+  male: 'text-voice-male',
+  female: 'text-voice-female',
+  duet: 'mx-voice-duet',
+};
+
+function VoiceLegend({ voiced }: { voiced: readonly VoicedText[] }) {
+  const present = (['male', 'female', 'duet'] as const).filter((voice) =>
+    voiced.some((line) => line.voice === voice),
+  );
+  return (
+    <div className="mb-1 flex justify-center gap-4 text-2xs font-medium" aria-hidden>
+      {present.map((voice) => (
+        <span key={voice} className={VOICE_COLOUR[voice]}>
+          ● {VOICE_LABEL[voice]}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Screen-reader prefix, only where the singer changes: announcing "Male" on
+ * every line of a verse would drown out the words.
+ */
+function voiceAnnouncement(voiced: readonly VoicedText[], index: number): string | null {
+  const voice = voiced[index]?.voice;
+  if (!voice || voiced[index - 1]?.voice === voice) return null;
+  return `${VOICE_LABEL[voice]}: `;
+}
+
+/** Position in the song shown by brightness; the singer by colour and side. */
+function syncedLineClass(voice: LyricsVoice | null, index: number, active: number): string {
+  if (!voice) {
+    return cx(
+      'text-center',
+      index === active ? 'font-semibold text-text' : index < active ? 'text-subtle' : 'text-muted',
+    );
+  }
+  // The singer's colour stays on every line, so a dimmed past line still shows
+  // who sang it.
+  return cx(
+    VOICE_ALIGN[voice],
+    VOICE_COLOUR[voice],
+    index === active ? 'font-semibold' : index < active ? 'opacity-40' : 'opacity-70',
+  );
+}
+
+function PlainLyrics({ text }: { text: string }) {
+  const voiced = useMemo(() => assignVoices(text.split(/\r?\n/)), [text]);
+  if (!hasVoices(voiced)) {
     return (
       <div className="mx-scroll max-h-[46vh] whitespace-pre-wrap text-sm leading-loose text-muted">
-        {lyrics.text}
+        {text}
       </div>
     );
   }
-  return <SyncedLyrics lyrics={lyrics} />;
+  return (
+    <div>
+      <VoiceLegend voiced={voiced} />
+      <div className="mx-scroll max-h-[46vh] text-sm leading-loose">
+        {voiced.map((line, index) => {
+          const announce = voiceAnnouncement(voiced, index);
+          return (
+            <p
+              key={index}
+              className={cx(
+                'min-h-[1lh]',
+                line.voice
+                  ? `${VOICE_ALIGN[line.voice]} ${VOICE_COLOUR[line.voice]}`
+                  : 'text-center text-muted',
+              )}
+            >
+              {announce && <span className="sr-only">{announce}</span>}
+              {line.text}
+            </p>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function SyncedLyrics({ lyrics }: { lyrics: Lyrics }) {
   // Memoised: a fresh `[]` each render would restart the animation loop below
   // on every frame it caused.
   const lines = useMemo(() => lyrics.lines ?? [], [lyrics.lines]);
+  const voiced = useMemo(() => assignVoices(lines.map((line) => line.text)), [lines]);
+  const withVoices = hasVoices(voiced);
   const mainPlaying = usePlayer((state) => state.status === 'playing');
   // Only read while paused (see the second effect below): subscribing to this
   // while playing would re-render on every ~250ms position tick, which the RAF
@@ -116,41 +213,43 @@ function SyncedLyrics({ lyrics }: { lyrics: Lyrics }) {
   }, [active]);
 
   return (
-    <div
-      ref={containerRef}
-      onWheel={() => {
-        userScrolledAt.current = Date.now();
-      }}
-      onTouchMove={() => {
-        userScrolledAt.current = Date.now();
-      }}
-      className="mx-scroll max-h-[46vh] py-8"
-      aria-label="Lyrics"
-    >
-      {lines.map((line, index) => (
-        <p
-          key={`${line.timeMs}-${index}`}
-          ref={index === active ? activeRef : undefined}
-          // Clicking a line seeks to it — the single most useful thing a
-          // synchronised lyric sheet can do. Seeks whichever engine actually
-          // owns playback (the stem mixer, during karaoke); falls back to the
-          // main player when nothing has claimed yet, e.g. lyrics opened
-          // before the track has been played at all.
-          onClick={() => {
-            if (!seekActiveSource(line.timeMs / 1000)) player.seek(line.timeMs / 1000);
-          }}
-          className={cx(
-            'cursor-pointer py-1.5 text-center text-lg leading-snug transition-colors',
-            index === active
-              ? 'font-semibold text-text'
-              : index < active
-                ? 'text-subtle'
-                : 'text-muted',
-          )}
-        >
-          {line.text || '·'}
-        </p>
-      ))}
+    <div>
+      {withVoices && <VoiceLegend voiced={voiced} />}
+      <div
+        ref={containerRef}
+        onWheel={() => {
+          userScrolledAt.current = Date.now();
+        }}
+        onTouchMove={() => {
+          userScrolledAt.current = Date.now();
+        }}
+        className="mx-scroll max-h-[46vh] py-8"
+        aria-label="Lyrics"
+      >
+        {lines.map((line, index) => (
+          <p
+            key={`${line.timeMs}-${index}`}
+            ref={index === active ? activeRef : undefined}
+            // Clicking a line seeks to it — the single most useful thing a
+            // synchronised lyric sheet can do. Seeks whichever engine actually
+            // owns playback (the stem mixer, during karaoke); falls back to the
+            // main player when nothing has claimed yet, e.g. lyrics opened
+            // before the track has been played at all.
+            onClick={() => {
+              if (!seekActiveSource(line.timeMs / 1000)) player.seek(line.timeMs / 1000);
+            }}
+            className={cx(
+              'cursor-pointer py-1.5 text-lg leading-snug transition-[color,opacity]',
+              syncedLineClass(voiced[index]?.voice ?? null, index, active),
+            )}
+          >
+            {voiceAnnouncement(voiced, index) && (
+              <span className="sr-only">{voiceAnnouncement(voiced, index)}</span>
+            )}
+            {voiced[index]?.text || '·'}
+          </p>
+        ))}
+      </div>
     </div>
   );
 }

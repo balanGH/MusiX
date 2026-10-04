@@ -27,6 +27,8 @@ export default {
         danger: rgb('--mx-danger'),
         warn: rgb('--mx-warn'),
         ok: rgb('--mx-ok'),
+        'voice-male': rgb('--mx-voice-male'),
+        'voice-female': rgb('--mx-voice-female'),
       },
       fontFamily: {
         sans: ['InterVariable', 'Inter', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],

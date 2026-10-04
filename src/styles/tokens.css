@@ -34,6 +34,10 @@
   --mx-warn: 180 120 10;
   --mx-ok: 15 145 100;
 
+  /* Lyric singers (core/lyrics/voices.ts): male, female; "both" blends them. */
+  --mx-voice-male: 2 132 199;
+  --mx-voice-female: 219 39 119;
+
   /* Height of the persistent player bar; layouts reserve exactly this. */
   --mx-player-height: 76px;
   --mx-sidebar-width: 248px;
@@ -62,6 +66,9 @@
   --mx-warn: 250 204 21;
   --mx-ok: 52 211 153;
 
+  --mx-voice-male: 56 189 248;
+  --mx-voice-female: 244 114 182;
+
   color-scheme: dark;
 }
 
@@ -88,6 +95,9 @@
   --mx-danger: 251 113 133;
   --mx-warn: 250 204 21;
   --mx-ok: 52 211 153;
+
+  --mx-voice-male: 56 189 248;
+  --mx-voice-female: 244 114 182;
 
   color-scheme: dark;
 }
@@ -276,6 +286,21 @@ body {
 /* ------------------------------------------------------------------------- */
 /* Utilities                                                                  */
 /* ------------------------------------------------------------------------- */
+
+/*
+ * Lyric lines sung by both singers: the male and female colours as one
+ * gradient across the text, so "both" reads as the two voices together.
+ */
+.mx-voice-duet {
+  background-image: linear-gradient(
+    90deg,
+    rgb(var(--mx-voice-male)),
+    rgb(var(--mx-voice-female))
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
 
 /*
  * Touch tap target. Small icon buttons in dense rows (30px) are fine for a
