@@ -41,7 +41,7 @@ import {
   waitForJob,
   type JobState,
 } from '@core/studio/client';
-import { formatDuration, formatQuality } from '@core/utils';
+import { formatBytes, formatDuration, formatQuality } from '@core/utils';
 import { useArtwork } from '@state/artworkCache';
 import { playerActions, usePlayer, usePlayerPosition } from '@state/playerStore';
 import { useSettings } from '@state/settingsStore';
@@ -132,9 +132,23 @@ export function NowPlaying() {
           return;
         }
 
+        // Shown live, with the speed: over Wi-Fi to a PC the upload can be the
+        // slow part, and "Opening file 0%" for the whole of it read as a hang.
+        const startedAt = performance.now();
+        setStemStatus({ kind: 'processing', progress: 0, stage: 'Uploading' });
         const { jobId } = await submitFile(file, target.filename, {
           stems: DEFAULT_STEMS,
           displayName: trackDisplayName(target),
+          onUploadProgress: (fraction) => {
+            const sent = fraction * file.size;
+            const seconds = (performance.now() - startedAt) / 1000;
+            const speed = seconds >= 1 ? ` · ${formatBytes(sent / seconds)}/s` : '';
+            setStemStatus({
+              kind: 'processing',
+              progress: fraction * 100,
+              stage: `Uploading ${formatBytes(sent)} of ${formatBytes(file.size)}${speed}`,
+            });
+          },
         });
         const finished = await waitForJob(jobId, (state) =>
           setStemStatus({ kind: 'processing', progress: state.progress, stage: state.stage }),
@@ -483,8 +497,8 @@ function StemStatusRow({
     return (
       <div className="mt-3 flex items-center gap-1.5 text-2xs text-muted">
         <Spinner size={12} />
-        <span>{status.stage}…</span>
-        <span className="tabular-nums">{Math.round(status.progress)}%</span>
+        <span className="min-w-0 truncate tabular-nums">{status.stage}…</span>
+        <span className="shrink-0 tabular-nums">{Math.round(status.progress)}%</span>
       </div>
     );
   }
