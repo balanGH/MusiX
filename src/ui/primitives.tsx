@@ -143,6 +143,26 @@ export function Slider({
   ...rest
 }: SliderProps) {
   const fill = max > min ? ((clamp(value, min, max) - min) / (max - min)) * 100 : 0;
+  // Guards against committing twice for one gesture, since both `pointerup`
+  // and `lostpointercapture` normally fire at the end of a drag.
+  const committed = useRef(false);
+
+  /**
+   * End of an interaction.
+   *
+   * `lostpointercapture` is the reliable signal, not `pointerup`: a range input
+   * takes implicit pointer capture, so releasing the pointer anywhere — very
+   * common when a drag drifts off the control — fires capture loss but not a
+   * `pointerup` on the input. Listening only for `pointerup` left the caller
+   * mid-drag forever: the seek bar froze at the dropped position and the seek
+   * itself never happened.
+   */
+  const commit = (event: { currentTarget: HTMLInputElement }) => {
+    if (!onCommit || committed.current) return;
+    committed.current = true;
+    onCommit(Number.parseFloat(event.currentTarget.value));
+  };
+
   return (
     <input
       type="range"
@@ -155,8 +175,15 @@ export function Slider({
       style={{ ['--mx-fill' as string]: `${fill}%` }}
       className={cx('mx-range', ghost && 'mx-range-ghost', className)}
       onChange={(event) => onValueChange(Number.parseFloat(event.target.value))}
-      onPointerUp={onCommit ? (event) => onCommit(Number.parseFloat(event.currentTarget.value)) : undefined}
-      onKeyUp={onCommit ? (event) => onCommit(Number.parseFloat(event.currentTarget.value)) : undefined}
+      onPointerDown={() => {
+        committed.current = false;
+      }}
+      onPointerUp={commit}
+      onLostPointerCapture={commit}
+      onKeyDown={() => {
+        committed.current = false;
+      }}
+      onKeyUp={commit}
       {...rest}
     />
   );

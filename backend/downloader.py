@@ -1,0 +1,575 @@
+"""
+MusiX online music downloader.
+
+Provides:
+- YouTube Music search through yt-dlp
+- audio download
+- MP3 conversion
+- metadata
+- embedded artwork
+- download progress
+
+This module does not create its own web server.
+backend/main.py owns the FastAPI server.
+
+
+Why this searches YouTube Music rather than YouTube
+---------------------------------------------------
+A plain `ytsearch` returns *videos*. A video has an uploader and a description;
+it has no track, artist or album. yt-dlp's metadata post-processor falls back
+through `artist -> artists -> creator -> creators -> uploader`, so a music video
+uploaded by a label ends up tagged with the **channel name** — which is how a
+download previously came out as `artist=SonyMusicSouthVEVO`, `genre=<the
+video's SEO keyword list>` and `title=<the full YouTube video title>`.
+
+`https://music.youtube.com/search?q=` returns YouTube Music entries instead.
+Those resolve with real `track`, `artists`, `album` and `release_year`, which is
+what the reference library in Music/spotify was built from — every file there
+carries a `music.youtube.com/watch?v=...` comment tag.
+
+Note the *watch* URL host makes no difference: `music.youtube.com/watch?v=X` and
+`www.youtube.com/watch?v=X` return identical metadata for the same id. What
+matters is picking a music entry in the first place. The music URL is still what
+gets recorded in the comment tag, to match the reference files.
+"""
+
+from __future__ import annotations
+
+import glob
+import re
+import threading
+import unicodedata
+import urllib.parse
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any
+
+import yt_dlp
+
+import config
+import lyrics
+
+
+# ---------------------------------------------------------------------------
+# Storage
+# ---------------------------------------------------------------------------
+#
+# The destination is resolved per download through `config.download_dir()`
+# rather than held in a module constant, so a folder chosen in Settings applies
+# to the next download instead of needing a restart.
+
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+
+jobs: dict[str, dict[str, Any]] = {}
+_jobs_lock = threading.Lock()
+
+#: Finished jobs kept for status/file requests; the oldest are dropped beyond it.
+MAX_DOWNLOAD_JOBS_KEPT = 50
+
+#: Downloads run on a small fixed pool rather than one thread each, so a burst
+#: of clicks queues instead of starting unbounded yt-dlp + FFmpeg processes.
+_download_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="musix-download")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+#: A YouTube video id. Music search also returns album/playlist browse ids
+#: (`MPREb_...`), which cannot be downloaded and have to be filtered out.
+VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+#: Characters Windows forbids in a filename, plus control characters.
+ILLEGAL_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def music_url(video_id: str) -> str:
+    return f"https://music.youtube.com/watch?v={video_id}"
+
+
+_YOUTUBE_WATCH_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
+
+
+def video_id_from(raw: str) -> str | None:
+    """The YouTube video id in `raw`, or None if it is not a plain video link.
+
+    Only a bare id, a `youtube.com/watch?v=` URL (www, m or music) or a
+    `youtu.be/<id>` short link is accepted. Handing yt-dlp an arbitrary URL
+    would let its generic extractor fetch anything — a router admin page, say —
+    on the caller's behalf.
+    """
+    raw = raw.strip()
+    if VIDEO_ID.match(raw):
+        return raw
+
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or parsed.port is not None:
+        return None
+    host = (parsed.hostname or "").lower()
+
+    if host in _YOUTUBE_WATCH_HOSTS and parsed.path == "/watch":
+        candidate = urllib.parse.parse_qs(parsed.query).get("v", [""])[0]
+    elif host == "youtu.be":
+        candidate = parsed.path.lstrip("/")
+    else:
+        return None
+
+    return candidate if VIDEO_ID.match(candidate) else None
+
+
+def _artist_list(info: dict[str, Any]) -> list[str]:
+    """Every credited artist, in order, from whichever field carries them.
+
+    Deliberately does *not* fall back to `uploader`/`channel`: an absent artist
+    is better than the channel name, which is what made downloads look tagged
+    when they were not.
+    """
+    for key in ("artists", "creators"):
+        value = info.get(key)
+        if isinstance(value, list) and value:
+            return [str(item).strip() for item in value if str(item).strip()]
+
+    for key in ("artist", "creator"):
+        value = info.get(key)
+        if isinstance(value, str) and value.strip():
+            # yt-dlp joins multiple artists with ", " in the scalar field.
+            return [part.strip() for part in value.split(",") if part.strip()]
+
+    return []
+
+
+def _clean_title(info: dict[str, Any]) -> str:
+    """The song title, preferring the music `track` field over a video title."""
+    track = info.get("track")
+    if isinstance(track, str) and track.strip():
+        return track.strip()
+
+    # No music metadata. Strip the worst of the YouTube video-title noise
+    # rather than storing "Song | Actor, Actor | Composer" as a title.
+    title = str(info.get("title") or "Unknown title")
+    title = re.sub(
+        r"\s*[\(\[]\s*(official|full)?\s*(music\s*)?"
+        r"(video|audio|song|lyric[s]?|4k|hd)\b[^)\]]*[\)\]]",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    title = title.split("|")[0]
+    return title.strip(" -–—") or "Unknown title"
+
+
+def _number_pair(index: Any, total: Any) -> str:
+    """`5/7` when both are known, `5` when only the index is, else empty."""
+    if not isinstance(index, int) or index <= 0:
+        return ""
+    if isinstance(total, int) and total > 0:
+        return f"{index}/{total}"
+    return str(index)
+
+
+def safe_filename(name: str, fallback: str = "track") -> str:
+    """Make a display name usable as a filename on Windows."""
+    name = unicodedata.normalize("NFC", name)
+    name = ILLEGAL_FILENAME.sub("", name)
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    # Leave headroom for the extension and the directory prefix.
+    name = name[:150].strip(" .")
+    return name or fallback
+
+
+def display_name(title: str, artists: list[str]) -> str:
+    """`Title - Artist One, Artist Two`, matching the reference library."""
+    return f"{title} - {', '.join(artists)}" if artists else title
+
+
+# ---------------------------------------------------------------------------
+# Online search
+# ---------------------------------------------------------------------------
+
+_FLAT_OPTIONS = {
+    "quiet": True,
+    "no_warnings": True,
+    "skip_download": True,
+    "extract_flat": True,
+    "noplaylist": True,
+}
+
+_RESOLVE_OPTIONS = {
+    "quiet": True,
+    "no_warnings": True,
+    "skip_download": True,
+    "noplaylist": True,
+}
+
+
+def _candidate_ids(query: str, wanted: int) -> list[str]:
+    """Video ids from a YouTube Music search, best first."""
+    url = "https://music.youtube.com/search?q=" + urllib.parse.quote(query)
+
+    options = {**_FLAT_OPTIONS, "playlist_items": f"1-{wanted * 3}"}
+
+    with yt_dlp.YoutubeDL(options) as ydl:
+        result = ydl.extract_info(url, download=False)
+
+    ids: list[str] = []
+    for entry in (result or {}).get("entries") or []:
+        if not entry:
+            continue
+        video_id = entry.get("id")
+        # Album and playlist entries carry a browse id, not a video id.
+        if isinstance(video_id, str) and VIDEO_ID.match(video_id) and video_id not in ids:
+            ids.append(video_id)
+
+    return ids[:wanted]
+
+
+def _resolve(video_id: str) -> dict[str, Any] | None:
+    """Full metadata for one entry, or None if it cannot be read."""
+    try:
+        with yt_dlp.YoutubeDL(_RESOLVE_OPTIONS) as ydl:
+            return ydl.extract_info(music_url(video_id), download=False)
+    except Exception:
+        # One unavailable video must not fail the whole search.
+        return None
+
+
+def search_online(query: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Search YouTube Music and return entries with real music metadata.
+
+    Each candidate is resolved fully, because a flat search result carries only
+    an id and a title — `track`, `artists` and `album` only appear once the
+    entry is resolved. The resolutions run concurrently; serially they would
+    take about three seconds each.
+    """
+    query = query.strip()
+    if not query:
+        return []
+
+    video_ids = _candidate_ids(query, limit)
+    if not video_ids:
+        return []
+
+    with ThreadPoolExecutor(max_workers=min(len(video_ids), 6)) as pool:
+        resolved = list(pool.map(_resolve, video_ids))
+
+    results: list[dict[str, Any]] = []
+
+    for video_id, info in zip(video_ids, resolved):
+        if not info:
+            continue
+
+        artists = _artist_list(info)
+
+        results.append(
+            {
+                "id": video_id,
+                "title": _clean_title(info),
+                "url": music_url(video_id),
+                "thumbnail": _best_thumbnail(info),
+                "channel": info.get("channel") or info.get("uploader"),
+                "artist": ", ".join(artists) if artists else None,
+                "album": info.get("album"),
+                "year": info.get("release_year"),
+                "duration": info.get("duration"),
+                # Lets the UI mark entries that will import fully tagged.
+                "hasMetadata": bool(info.get("track") and artists),
+            }
+        )
+
+    # Entries with real music metadata first; they tag correctly on import.
+    results.sort(key=lambda entry: not entry["hasMetadata"])
+    return results
+
+
+def _best_thumbnail(info: dict[str, Any]) -> str | None:
+    thumbnail = info.get("thumbnail")
+    if isinstance(thumbnail, str) and thumbnail:
+        return thumbnail
+    thumbnails = info.get("thumbnails") or []
+    return thumbnails[-1].get("url") if thumbnails else None
+
+
+# ---------------------------------------------------------------------------
+# Tagging
+# ---------------------------------------------------------------------------
+
+
+def build_tags(info: dict[str, Any]) -> dict[str, str]:
+    """The tags to write, as yt-dlp `meta_*` overrides.
+
+    Any `meta_<name>` key in the info dict replaces whatever yt-dlp's metadata
+    post-processor computed for `<name>`, and an empty value clears that tag
+    entirely. That is how the YouTube cruft — the SEO keyword list in `genre`,
+    the whole video description in `description`/`synopsis`, and `purl` — is
+    kept out of the file.
+
+    Field choices follow the reference library in Music/spotify:
+      artist        multiple artists separated by `/`, the ID3 convention
+      album_artist  the primary artist
+      date          the release year, not the upload year
+      comment       the music.youtube.com URL
+    """
+    artists = _artist_list(info)
+    album_artists = info.get("album_artists")
+
+    if isinstance(album_artists, list) and album_artists:
+        album_artist = str(album_artists[0])
+    else:
+        album_artist = str(info.get("album_artist") or (artists[0] if artists else ""))
+
+    year = info.get("release_year")
+    if not year:
+        release_date = info.get("release_date")
+        # `release_date` is YYYYMMDD. `upload_date` is deliberately not used:
+        # it is when the video was posted, which for a re-upload of a 2011 song
+        # is simply wrong.
+        year = str(release_date)[:4] if release_date else ""
+
+    return {
+        "meta_title": _clean_title(info),
+        "meta_artist": "/".join(artists),
+        "meta_album_artist": album_artist,
+        "meta_album": str(info.get("album") or ""),
+        "meta_date": str(year or ""),
+        "meta_track": _number_pair(info.get("track_number"), info.get("n_entries")),
+        "meta_disc": _number_pair(info.get("disc_number"), None),
+        "meta_comment": music_url(str(info.get("id") or "")),
+        # Cleared: YouTube's own fields, none of which belong in a music tag.
+        "meta_genre": str(info.get("genre") or ""),
+        "meta_description": "",
+        "meta_synopsis": "",
+        "meta_purl": "",
+    }
+
+
+class _WriteMusicTags(yt_dlp.postprocessor.PostProcessor):
+    """Injects the `meta_*` overrides before the metadata post-processor runs.
+
+    Registered with `when='pre_process'`, so the values are in the info dict by
+    the time `FFmpegMetadataPP` assembles its `-metadata` arguments.
+    """
+
+    def run(self, info):  # noqa: ANN001, ANN201 - yt-dlp's PP signature
+        info.update(build_tags(info))
+        return [], info
+
+
+# ---------------------------------------------------------------------------
+# Download
+# ---------------------------------------------------------------------------
+
+
+def _new_job() -> dict[str, Any]:
+    return {
+        "status": "queued",
+        "progress": 0,
+        "title": None,
+        "artist": None,
+        "album": None,
+        "filename": None,
+        "thumbnail": None,
+        # "synced", "plain" or None once the download finishes.
+        "lyrics": None,
+        "error": None,
+    }
+
+
+def _remove_partials(destination: Path, video_id: str) -> None:
+    """Delete what a failed download left behind under its `<id>.*` names.
+
+    `.part` fragments, the pre-conversion WebM/M4A and the thumbnail are all
+    written under the video id; the finished file is renamed away from it, so
+    this never touches a completed download.
+    """
+    for leftover in destination.glob(f"{glob.escape(video_id)}.*"):
+        try:
+            leftover.unlink()
+        except OSError:
+            pass
+
+
+def _download_song(job_id: str, video_id: str, want_lyrics: bool = True) -> None:
+    url = music_url(video_id)
+    jobs[job_id]["status"] = "starting"
+
+    def progress_hook(data: dict[str, Any]) -> None:
+        if data["status"] == "downloading":
+            total = data.get("total_bytes") or data.get("total_bytes_estimate")
+            downloaded = data.get("downloaded_bytes", 0)
+
+            jobs[job_id]["status"] = "downloading"
+            jobs[job_id]["progress"] = round(downloaded / total * 100, 1) if total else 0
+
+        elif data["status"] == "finished":
+            # The download is done; transcoding and tagging still follow.
+            jobs[job_id]["status"] = "processing"
+            jobs[job_id]["progress"] = 100
+
+    # Resolved once per download, so a folder chosen in Settings takes effect
+    # immediately and a whole job stays in one place even if it changes midway.
+    destination = config.download_dir()
+
+    options = {
+        "format": "bestaudio/best",
+        # Downloaded under the video id, then renamed once the real title is
+        # known — a template cannot express the reference naming reliably.
+        "outtmpl": str(destination / "%(id)s.%(ext)s"),
+        "writethumbnail": True,
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "320",
+            },
+            # The reference library embeds JPEG covers; YouTube serves WebP.
+            {
+                "key": "FFmpegThumbnailsConvertor",
+                "format": "jpg",
+            },
+            {
+                "key": "FFmpegMetadata",
+                "add_metadata": True,
+            },
+            {
+                "key": "EmbedThumbnail",
+            },
+        ],
+        "progress_hooks": [progress_hook],
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            ydl.add_post_processor(_WriteMusicTags(), when="pre_process")
+
+            info = ydl.extract_info(url, download=True)
+
+            downloaded = destination / f"{str(info.get('id') or video_id)}.mp3"
+
+            title = _clean_title(info)
+            artists = _artist_list(info)
+
+            final_path = _rename_to_display_name(downloaded, title, artists)
+
+            # Lyrics last: the download is already usable without them, so a
+            # slow or unavailable lyrics service must not hold up the result.
+            lyrics_kind = None
+            if want_lyrics:
+                jobs[job_id]["status"] = "fetching lyrics"
+                lyrics_kind = _attach_lyrics(
+                    final_path,
+                    title,
+                    artists,
+                    info.get("album"),
+                    info.get("duration"),
+                )
+
+            jobs[job_id] = {
+                "status": "complete",
+                "progress": 100,
+                "title": title,
+                "artist": ", ".join(artists) if artists else None,
+                "album": info.get("album") or "",
+                "filename": str(final_path),
+                "thumbnail": _best_thumbnail(info),
+                "lyrics": lyrics_kind,
+                "error": None,
+            }
+
+    except Exception as error:
+        _remove_partials(destination, video_id)
+        jobs[job_id] = {
+            "status": "error",
+            "progress": 0,
+            "title": None,
+            "artist": None,
+            "album": None,
+            "filename": None,
+            "thumbnail": None,
+            "lyrics": None,
+            "error": str(error),
+        }
+
+
+def _attach_lyrics(
+    path: Path,
+    title: str,
+    artists: list[str],
+    album: str | None,
+    duration: float | None,
+) -> str | None:
+    """Look up and embed lyrics. Returns "synced", "plain", or None.
+
+    Wrapped so that any failure — the service being down, a track nobody has
+    transcribed, mutagen missing — leaves a perfectly good download alone.
+    """
+    try:
+        found = lyrics.fetch(title, artists, album, duration)
+        if not found:
+            return None
+        if not lyrics.embed(path, found):
+            return None
+        return "synced" if found.synced else "plain"
+    except Exception:
+        return None
+
+
+def _rename_to_display_name(path: Path, title: str, artists: list[str]) -> Path:
+    """`<id>.mp3` -> `Title - Artist One, Artist Two.mp3`.
+
+    Falls back to the original path if the rename cannot be done, since a file
+    with an awkward name is still a perfectly good download.
+    """
+    if not path.is_file():
+        return path
+
+    target = path.with_name(safe_filename(display_name(title, artists)) + ".mp3")
+    if target == path:
+        return path
+
+    try:
+        # Re-downloading the same song should overwrite, not accumulate copies.
+        target.unlink(missing_ok=True)
+        path.replace(target)
+        return target
+    except OSError:
+        return path
+
+
+def _prune_jobs() -> None:
+    """Keep the job table bounded, dropping the oldest *finished* jobs first."""
+    finished = [
+        job_id for job_id, job in jobs.items() if job["status"] in {"complete", "error"}
+    ]
+    excess = len(jobs) - MAX_DOWNLOAD_JOBS_KEPT
+    # Dicts keep insertion order, so the first entries are the oldest.
+    for job_id in finished[: max(excess, 0)]:
+        jobs.pop(job_id, None)
+
+
+def start_download(video_id: str, want_lyrics: bool = True) -> str:
+    """Queue a download of one YouTube video id (see `video_id_from`)."""
+    job_id = uuid.uuid4().hex
+
+    # Registered before the worker is scheduled, so a status request made the
+    # moment this returns finds the job instead of a 404.
+    with _jobs_lock:
+        _prune_jobs()
+        jobs[job_id] = _new_job()
+
+    _download_pool.submit(_download_song, job_id, video_id, want_lyrics)
+
+    return job_id
+
+
+def get_job(job_id: str) -> dict[str, Any] | None:
+    return jobs.get(job_id)

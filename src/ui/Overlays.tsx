@@ -6,7 +6,7 @@
  * and all driven by `uiStore`.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
   AlertTriangle,
@@ -22,7 +22,14 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import { addTracksToPlaylist, createPlaylist, listPlaylists } from '@core/db/repositories/playlists';
+import {
+  addTracksToPlaylist,
+  createPlaylist,
+  listPlaylists,
+  playlistsContaining,
+  removeTrackFromPlaylist,
+  restoreTrackToPlaylist,
+} from '@core/db/repositories/playlists';
 import { formatCount } from '@core/utils';
 import { useUi, type Toast } from '@state/uiStore';
 import type { Playlist } from '@core/types';
@@ -58,8 +65,9 @@ export function Toasts() {
       // interrupt what the user is already hearing (spec §39).
       role="status"
       aria-live="polite"
-      className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-2"
-      style={{ bottom: 'calc(var(--mx-player-height) + 1rem)' }}
+      // `mx-toasts` (tokens.css) sets `bottom` so toasts clear the player bar,
+      // the mobile tab bar and the home-indicator inset.
+      className="mx-toasts pointer-events-none fixed right-4 z-[60] flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-2"
     >
       {toasts.map((toast) => (
         <ToastCard key={toast.id} toast={toast} onDismiss={() => dismiss(toast.id)} />
@@ -123,7 +131,7 @@ export function ConfirmDialog() {
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 p-4 animate-fade-in"
+      className="mx-safe-inset-p4 fixed inset-0 z-[70] flex items-center justify-center bg-black/55 animate-fade-in"
       onClick={(event) => {
         if (event.target === event.currentTarget) resolve(false);
       }}
@@ -174,18 +182,30 @@ export function AddToPlaylistDialog() {
   const trackIds = useUi((state) => state.addToPlaylistFor);
   const close = useUi((state) => state.closeAddToPlaylist);
   const toast = useUi((state) => state.toast);
+  const playlistsChanged = useUi((state) => state.playlistsChanged);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  /** playlistId -> occurrences of the track; only filled for a single track. */
+  const [containing, setContaining] = useState<Map<string, number>>(new Map());
   const [newName, setNewName] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // With one track the sheet is a checklist: tick to add, untick to remove,
+  // and it stays open so the song can go into several playlists in one visit.
+  // With many tracks it stays the one-shot "add these" picker.
+  const singleId = trackIds?.length === 1 ? trackIds[0]! : null;
+
+  const refresh = useCallback(async () => {
+    const all = await listPlaylists();
+    // Smart playlists are defined by rules, so tracks cannot be added to them.
+    setPlaylists(all.filter((playlist) => playlist.kind === 'manual'));
+    setContaining(singleId ? await playlistsContaining(singleId) : new Map());
+  }, [singleId]);
 
   useEffect(() => {
     if (!trackIds) return;
     setNewName('');
-    void listPlaylists().then((all) =>
-      // Smart playlists are defined by rules, so tracks cannot be added to them.
-      setPlaylists(all.filter((playlist) => playlist.kind === 'manual')),
-    );
-  }, [trackIds]);
+    void refresh();
+  }, [trackIds, refresh]);
 
   useEffect(() => {
     if (!trackIds) return;
@@ -200,36 +220,62 @@ export function AddToPlaylistDialog() {
 
   const label = trackIds.length === 1 ? 'track' : `${formatCount(trackIds.length)} tracks`;
 
-  const addTo = async (playlist: Playlist) => {
+  const run = async (work: () => Promise<void>) => {
     setBusy(true);
     try {
+      await work();
+    } catch {
+      toast('Couldn’t update the playlist.', { kind: 'error' });
+    } finally {
+      // Open playlist pages reload from this, even after a partial failure.
+      playlistsChanged();
+      setBusy(false);
+    }
+  };
+
+  const addTo = (playlist: Playlist) =>
+    run(async () => {
       const added = await addTracksToPlaylist(playlist.id, trackIds);
       toast(`Added ${added === 1 ? '1 track' : `${added} tracks`} to “${playlist.name}”.`, {
         kind: 'success',
       });
-      close();
-    } finally {
-      setBusy(false);
-    }
-  };
+      if (singleId) await refresh();
+      else close();
+    });
+
+  const removeFrom = (playlist: Playlist, trackId: string) =>
+    run(async () => {
+      const positions = await removeTrackFromPlaylist(playlist.id, trackId);
+      await refresh();
+      toast(`Removed from “${playlist.name}”.`, {
+        kind: 'success',
+        action: {
+          label: 'Undo',
+          run: () =>
+            void run(async () => {
+              await restoreTrackToPlaylist(playlist.id, trackId, positions);
+              await refresh();
+            }),
+        },
+      });
+    });
 
   const createAndAdd = async () => {
     const name = newName.trim();
     if (!name) return;
-    setBusy(true);
-    try {
+    await run(async () => {
       const playlist = await createPlaylist({ name });
       await addTracksToPlaylist(playlist.id, trackIds);
       toast(`Created “${playlist.name}” with ${label}.`, { kind: 'success' });
-      close();
-    } finally {
-      setBusy(false);
-    }
+      setNewName('');
+      if (singleId) await refresh();
+      else close();
+    });
   };
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 p-4 animate-fade-in"
+      className="mx-safe-inset-p4 fixed inset-0 z-[70] flex items-center justify-center bg-black/55 animate-fade-in"
       onClick={(event) => {
         if (event.target === event.currentTarget) close();
       }}
@@ -242,7 +288,7 @@ export function AddToPlaylistDialog() {
       >
         <div className="flex items-center justify-between border-b border-line p-4">
           <h2 id="mx-playlist-title" className="text-base font-semibold">
-            Add {label} to a playlist
+            {singleId ? 'Save to playlist' : `Add ${label} to a playlist`}
           </h2>
           <IconButton label="Close" size={28} onClick={close}>
             <X className="h-4 w-4" />
@@ -256,22 +302,45 @@ export function AddToPlaylistDialog() {
             </p>
           ) : (
             <ul>
-              {playlists.map((playlist) => (
-                <li key={playlist.id}>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void addTo(playlist)}
-                    className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-surface-hover disabled:opacity-50"
-                  >
-                    <ListMusic className="h-4 w-4 shrink-0 text-subtle" />
-                    <span className="min-w-0 flex-1 truncate text-sm">{playlist.name}</span>
-                    <span className="shrink-0 text-2xs text-subtle">
-                      {formatCount(playlist.trackCount)}
-                    </span>
-                  </button>
-                </li>
-              ))}
+              {playlists.map((playlist) => {
+                const times = containing.get(playlist.id) ?? 0;
+                const inIt = singleId !== null && times > 0;
+                return (
+                  <li key={playlist.id}>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      // Announced as a checkbox, so screen readers say which
+                      // playlists already hold the song.
+                      {...(singleId ? { role: 'checkbox', 'aria-checked': inIt } : {})}
+                      title={inIt ? `Remove from “${playlist.name}”` : `Add to “${playlist.name}”`}
+                      onClick={() =>
+                        void (inIt && singleId ? removeFrom(playlist, singleId) : addTo(playlist))
+                      }
+                      className="flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-surface-hover disabled:opacity-50"
+                    >
+                      {singleId ? (
+                        <span
+                          aria-hidden
+                          className={cx(
+                            'flex h-5 w-5 shrink-0 items-center justify-center rounded-md border',
+                            inIt ? 'border-accent bg-accent text-white' : 'border-line-strong',
+                          )}
+                        >
+                          {inIt && <Check className="h-3.5 w-3.5" />}
+                        </span>
+                      ) : (
+                        <ListMusic className="h-4 w-4 shrink-0 text-subtle" />
+                      )}
+                      <span className="min-w-0 flex-1 truncate text-sm">{playlist.name}</span>
+                      {times > 1 && <span className="shrink-0 text-2xs text-accent">×{times}</span>}
+                      <span className="shrink-0 text-2xs text-subtle">
+                        {formatCount(playlist.trackCount)}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
@@ -295,6 +364,11 @@ export function AddToPlaylistDialog() {
             <Check className="h-3.5 w-3.5" />
             Create
           </Button>
+          {singleId && (
+            <Button type="button" size="sm" onClick={close}>
+              Done
+            </Button>
+          )}
         </form>
       </div>
     </div>
@@ -323,11 +397,10 @@ export function MobileNav() {
   return (
     <nav
       aria-label="Main navigation"
-      className="z-30 flex shrink-0 items-stretch border-t border-line bg-bg-elevated md:hidden"
-      style={{
-        height: 'var(--mx-nav-height)',
-        paddingBottom: 'env(safe-area-inset-bottom)',
-      }}
+      // `mx-mobile-nav` (tokens.css): a content-box height plus the inset as
+      // padding, so the home indicator adds space below the tabs rather than
+      // squashing them.
+      className="mx-mobile-nav z-30 flex shrink-0 items-stretch border-t border-line bg-bg-elevated md:hidden"
     >
       {MOBILE_TABS.map((tab) => (
         <NavLink

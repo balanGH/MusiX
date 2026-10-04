@@ -15,6 +15,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, Headphones, Mic2, Pause, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react';
+import {
+  claimAudioSource,
+  notifyAudioSourceChanged,
+  registerAudioSource,
+  unregisterAudioSource,
+} from '@core/audio/exclusivity';
 import { clamp, formatDuration, sliderToGain } from '@core/utils';
 import { stemUrl, type JobState, type StemName } from '@core/studio/client';
 import { Button, IconButton, Slider, cx } from '@ui/primitives';
@@ -38,6 +44,10 @@ export function StemMixer({ job }: { job: JobState }) {
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
+  // While dragging, the slider shows this instead of the live `position` —
+  // otherwise the sync loop's per-frame setPosition(now) fights the drag and
+  // snaps the thumb back before a release can ever register a seek.
+  const [dragging, setDragging] = useState<number | null>(null);
   const [levels, setLevels] = useState<Record<string, { volume: number; muted: boolean; solo: boolean }>>(
     {},
   );
@@ -45,6 +55,13 @@ export function StemMixer({ job }: { job: JobState }) {
   const contextRef = useRef<AudioContext | null>(null);
   const channelsRef = useRef<StemChannel[]>([]);
   const frameRef = useRef(0);
+  // Mirrors `playing` for the exclusivity handle below, which is registered
+  // once on mount and would otherwise close over a stale `playing` from that
+  // first render — refs read live, state closures do not.
+  const playingRef = useRef(false);
+  useEffect(() => {
+    playingRef.current = playing;
+  }, [playing]);
 
   const stems = useMemo(() => job.stems.map((stem) => stem.name), [job.stems]);
 
@@ -89,7 +106,20 @@ export function StemMixer({ job }: { job: JobState }) {
       else channel.element.addEventListener('loadedmetadata', onReady, { once: true });
     }
 
+    // The clock reaching the end ends the mix: stop the rest, flip the
+    // transport back to Play and let the sync loop stop with it.
+    const clockElement = channels[0]?.element;
+    const onEnded = () => {
+      for (const channel of channels) channel.element.pause();
+      playingRef.current = false;
+      setPlaying(false);
+      setPosition(clockElement?.duration || 0);
+      notifyAudioSourceChanged();
+    };
+    clockElement?.addEventListener('ended', onEnded);
+
     return () => {
+      clockElement?.removeEventListener('ended', onEnded);
       cancelAnimationFrame(frameRef.current);
       for (const channel of channels) {
         channel.element.pause();
@@ -124,6 +154,9 @@ export function StemMixer({ job }: { job: JobState }) {
         setPosition(now);
         for (let i = 1; i < channels.length; i++) {
           const element = channels[i]!.element;
+          // Mid-seek, currentTime is already the target but playback is not;
+          // re-seeking then would just restart the seek every frame.
+          if (clock.element.seeking || element.seeking) continue;
           if (Math.abs(element.currentTime - now) > DRIFT_TOLERANCE_SEC) {
             element.currentTime = now;
           }
@@ -193,33 +226,69 @@ export function StemMixer({ job }: { job: JobState }) {
     [applyGains],
   );
 
+  /** Pause every channel without touching the AudioContext itself. */
+  const pauseAll = useCallback(() => {
+    for (const channel of channelsRef.current) channel.element.pause();
+    playingRef.current = false;
+    setPlaying(false);
+  }, []);
+
   const toggle = useCallback(async () => {
     const context = contextRef.current;
     if (!context) return;
     if (context.state === 'suspended') await context.resume();
 
     if (playing) {
-      for (const channel of channelsRef.current) channel.element.pause();
-      setPlaying(false);
+      pauseAll();
+      notifyAudioSourceChanged();
       return;
     }
 
+    // Claimed before the elements actually start: the main player (or
+    // anything else) must be silenced first, not after a race with it.
+    claimAudioSource('mixer');
+
     // Align before starting, then start together.
     const clock = channelsRef.current[0];
-    const start = clock?.element.currentTime ?? 0;
+    // After the mix has ended, Play starts it again from the top.
+    const start = clock?.element.ended ? 0 : (clock?.element.currentTime ?? 0);
     for (const channel of channelsRef.current) channel.element.currentTime = start;
     await Promise.all(channelsRef.current.map((channel) => channel.element.play()));
+    playingRef.current = true;
     setPlaying(true);
-  }, [playing]);
+    notifyAudioSourceChanged();
+  }, [playing, pauseAll]);
 
   const seek = useCallback((seconds: number) => {
     for (const channel of channelsRef.current) channel.element.currentTime = seconds;
     setPosition(seconds);
+    setDragging(null);
+    // Only matters while paused — the sync loop already reports live position
+    // every frame while playing — but it's what lets the lyrics view notice a
+    // paused seek made from its own "click a line to jump there" handler.
+    notifyAudioSourceChanged();
   }, []);
+
+  /**
+   * Make this mixer a source other code can discover, stop, seek and poll —
+   * registered once so the main player (and, through it, a keyboard shortcut
+   * or an OS media key) can silence this mixer without knowing it exists, and
+   * so the lyrics view can follow it during karaoke playback (spec §14).
+   */
+  useEffect(() => {
+    registerAudioSource('mixer', {
+      stop: pauseAll,
+      seek,
+      getPositionSec: () => channelsRef.current[0]?.element.currentTime ?? 0,
+      isPlaying: () => playingRef.current,
+    });
+    return () => unregisterAudioSource('mixer');
+  }, [pauseAll, seek]);
 
   if (job.status !== 'complete') return null;
 
   const anySolo = Object.values(levels).some((level) => level.solo);
+  const shownPosition = dragging ?? position;
 
   return (
     <div className="rounded-panel border border-line bg-surface p-4">
@@ -262,15 +331,15 @@ export function StemMixer({ job }: { job: JobState }) {
         </IconButton>
 
         <span className="w-11 shrink-0 text-right text-2xs tabular-nums text-subtle">
-          {formatDuration(position * 1000)}
+          {formatDuration(shownPosition * 1000)}
         </span>
         <Slider
           label="Seek the mix"
-          value={position}
+          value={shownPosition}
           min={0}
           max={duration > 0 ? duration : 1}
           step={0.1}
-          onValueChange={setPosition}
+          onValueChange={setDragging}
           onCommit={seek}
           className="flex-1"
           disabled={!ready}
@@ -338,7 +407,7 @@ export function StemMixer({ job }: { job: JobState }) {
 
               <a
                 href={stemUrl(job.jobId, name)}
-                download={`${job.sourceName} - ${name}.wav`}
+                download={`${job.sourceName} - ${name}.mp3`}
                 aria-label={`Download the ${name} stem`}
                 title={`Download the ${name} stem`}
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted transition hover:bg-surface-hover hover:text-text"

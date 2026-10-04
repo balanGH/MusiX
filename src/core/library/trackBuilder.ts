@@ -20,6 +20,8 @@ import type { Track } from '../types';
 
 export const UNKNOWN_ARTIST = 'Unknown Artist';
 export const UNKNOWN_ALBUM = 'Unknown Album';
+/** Album artist for a compilation-flagged file that names no album artist. */
+export const VARIOUS_ARTISTS = 'Various Artists';
 
 export function artistIdFor(name: string): string {
   return hashId(`artist:${fold(name)}`);
@@ -79,12 +81,16 @@ export function buildTrack(input: BuildTrackInput): Track {
   const title = taggedTitle || titleFromFilename(entry.name);
   const artist = taggedArtist || UNKNOWN_ARTIST;
   // Album artist falls back to the track artist, which is right for the great
-  // majority of albums and is what every other player does.
-  const albumArtist = tags.albumArtist?.trim() || artist;
+  // majority of albums and is what every other player does — except for a file
+  // flagged as part of a compilation, which would otherwise split the album
+  // into one per track artist.
+  const taggedAlbumArtist =
+    tags.albumArtist?.trim() || (tags.compilation && taggedAlbum ? VARIOUS_ARTISTS : '');
+  const albumArtist = taggedAlbumArtist || artist;
   const album = taggedAlbum || (directory ? basename(directory) : UNKNOWN_ALBUM);
 
   const artists = taggedArtist ? splitArtists(taggedArtist) : [UNKNOWN_ARTIST];
-  const albumArtistNames = tags.albumArtist ? splitArtists(tags.albumArtist) : [];
+  const albumArtistNames = taggedAlbumArtist ? splitArtists(taggedAlbumArtist) : [];
   const artistIds = [...new Set([...artists, ...albumArtistNames].map(artistIdFor))];
 
   const genres = tags.genre ? [...new Set(tags.genre.map((genre) => genre.trim()).filter(Boolean))] : [];

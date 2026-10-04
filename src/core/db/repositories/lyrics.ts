@@ -8,12 +8,20 @@
  */
 
 import { getDb } from '../database';
-import { get as getOne, putMany, remove } from '../idb';
+import { get as getOne, getMany, putMany, remove } from '../idb';
 import { Stores } from '../schema';
 import type { Lyrics } from '../../types';
 
 export async function getLyrics(trackId: string): Promise<Lyrics | undefined> {
   return getOne<Lyrics>(await getDb(), Stores.lyrics, trackId);
+}
+
+/** Stored lyrics for many tracks at once, keyed by track id; absent ids are left out. */
+export async function getLyricsMap(trackIds: readonly string[]): Promise<Map<string, Lyrics>> {
+  const rows = await getMany<Lyrics>(await getDb(), Stores.lyrics, trackIds);
+  const out = new Map<string, Lyrics>();
+  for (const row of rows) if (row) out.set(row.trackId, row);
+  return out;
 }
 
 export async function putLyrics(lyrics: Lyrics): Promise<void> {

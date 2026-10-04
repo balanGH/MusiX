@@ -9,7 +9,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Disc3, ListPlus, Play, Shuffle } from 'lucide-react';
 import { getAlbum } from '@core/db/repositories/library';
-import { setFavorite, tracksByAlbum } from '@core/db/repositories/tracks';
+import { tracksByAlbum } from '@core/db/repositories/tracks';
 import { formatDurationLong } from '@core/utils';
 import { useLibrary } from '@state/libraryStore';
 import { playerActions, usePlayer } from '@state/playerStore';
@@ -31,21 +31,32 @@ export function AlbumPage() {
   const [album, setAlbum] = useState<Album | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!albumId) return;
     let cancelled = false;
     setLoading(true);
-    void Promise.all([getAlbum(albumId), tracksByAlbum(albumId)]).then(([found, rows]) => {
-      if (cancelled) return;
-      setAlbum(found ?? null);
-      setTracks(rows);
-      setLoading(false);
-    });
+    setFailed(false);
+    Promise.all([getAlbum(albumId), tracksByAlbum(albumId)]).then(
+      ([found, rows]) => {
+        if (cancelled) return;
+        setAlbum(found ?? null);
+        setTracks(rows);
+        setLoading(false);
+      },
+      () => {
+        // Without this a read error left the spinner up forever.
+        if (cancelled) return;
+        setFailed(true);
+        setLoading(false);
+      },
+    );
     return () => {
       cancelled = true;
     };
-  }, [albumId, revision]);
+  }, [albumId, revision, attempt]);
 
   const ids = useMemo(() => tracks.map((track) => track.id), [tracks]);
 
@@ -66,6 +77,17 @@ export function AlbumPage() {
       <div className="flex flex-1 items-center justify-center">
         <Spinner size={20} />
       </div>
+    );
+  }
+
+  if (failed) {
+    return (
+      <EmptyState
+        icon={<Disc3 className="h-8 w-8" />}
+        title="Couldn’t open this album"
+        body="Reading it from your library failed."
+        action={<Button onClick={() => setAttempt((n) => n + 1)}>Try again</Button>}
+      />
     );
   }
 
@@ -183,7 +205,11 @@ export function AlbumPage() {
                             row.id === track.id ? { ...row, favorite: !row.favorite } : row,
                           ),
                         );
-                        void setFavorite(track.id, !track.favorite);
+                        // Through the player, not the repository directly: if
+                        // this row happens to be the currently-playing track,
+                        // the player bar and Now Playing need to hear about it
+                        // too, or their heart silently stops reflecting reality.
+                        void playerActions.setFavorite(track.id, !track.favorite);
                       }}
                       menuItems={trackMenuItems({
                         onPlayNext: () => playerActions.playNext([track.id]),

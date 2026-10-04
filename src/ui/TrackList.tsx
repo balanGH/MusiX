@@ -10,7 +10,7 @@
 
 import { useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTracks, setFavorite } from '@core/db/repositories/tracks';
+import { getTracks } from '@core/db/repositories/tracks';
 import { playerActions, usePlayer } from '@state/playerStore';
 import { useSettings } from '@state/settingsStore';
 import { useUi } from '@state/uiStore';
@@ -63,11 +63,14 @@ export function TrackList({
   const identify = useCallback((track: Track) => track.id, []);
   const { records, onRangeChange, refresh } = useWindowedRecords(ids, fetch, identify);
 
-  // Favourite state lives on the record, so toggling has to update the copy the
-  // list is holding as well as the database.
+  // Favourite state lives on the record, so toggling has to update the copy
+  // the list is holding as well as the database. Routed through the player
+  // (not the repository directly) so that a row which happens to be the
+  // currently-playing track keeps the player bar and Now Playing's hearts in
+  // sync too, rather than leaving them stuck on the pre-toggle state.
   const toggleFavorite = useCallback(
     async (track: Track) => {
-      await setFavorite(track.id, !track.favorite);
+      await playerActions.setFavorite(track.id, !track.favorite);
       await refresh([track.id]);
     },
     [refresh],

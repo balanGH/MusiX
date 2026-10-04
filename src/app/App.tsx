@@ -10,6 +10,8 @@ import { Suspense, lazy } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './AppShell';
 import { ErrorBoundary } from './ErrorBoundary';
+import { useBackendFeatures, useServerStatusWatcher } from '@core/net/serverStatus';
+import { useSettings } from '@state/settingsStore';
 import { Spinner } from '@ui/primitives';
 
 // Eager: these are the first screens a user sees.
@@ -67,9 +69,34 @@ function PageFallback() {
   );
 }
 
+/** Probes the backend on launch, on resume and when its settings change. */
+function ServerStatusWatcher() {
+  const serverUrl = useSettings((state) => state.serverUrl);
+  const serverToken = useSettings((state) => state.serverToken);
+  useServerStatusWatcher(serverUrl, serverToken);
+  return null;
+}
+
+/**
+ * The studio needs the backend. Where it is hidden (the Android app with no
+ * PC server connected), a stale link or a lost connection lands on Home
+ * rather than on a page of controls that cannot work.
+ */
+function StudioRoute() {
+  const { visible, settled } = useBackendFeatures();
+  if (!settled) return <PageFallback />;
+  if (!visible) return <Navigate to="/" replace />;
+  return (
+    <Suspense fallback={<PageFallback />}>
+      <StudioPage />
+    </Suspense>
+  );
+}
+
 export function App() {
   return (
     <ErrorBoundary>
+      <ServerStatusWatcher />
       <BrowserRouter>
         <Routes>
           <Route element={<AppShell />}>
@@ -173,14 +200,7 @@ export function App() {
                 </Suspense>
               }
             />
-            <Route
-              path="/studio"
-              element={
-                <Suspense fallback={<PageFallback />}>
-                  <StudioPage />
-                </Suspense>
-              }
-            />
+            <Route path="/studio" element={<StudioRoute />} />
 
             {/* Unknown paths go home rather than showing a 404 in an app shell. */}
             <Route path="*" element={<Navigate to="/" replace />} />

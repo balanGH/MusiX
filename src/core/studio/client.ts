@@ -18,15 +18,21 @@
  */
 
 import { createLogger, describeError } from '../logger';
+import { apiHeaders, apiMediaUrl, apiUrl } from '../net/apiBase';
 
 const log = createLogger('studio');
-
-/** Same-origin; vite.config.ts proxies /api to the local service in dev. */
-const API_BASE = '/api';
 
 /** The stems `htdemucs_6s` produces. The default model gives the first four. */
 export const STEM_NAMES = ['vocals', 'drums', 'bass', 'guitar', 'piano', 'other'] as const;
 export type StemName = (typeof STEM_NAMES)[number];
+
+/** What a one-click separation (no stem picker shown) asks for. */
+export const DEFAULT_STEMS: StemName[] = ['vocals', 'drums', 'bass', 'other'];
+
+/** The label a track is submitted under — also how a prior job for it is recognised. */
+export function trackDisplayName(track: { artist: string; title: string }): string {
+  return `${track.artist} - ${track.title}`;
+}
 
 export type JobStatus = 'queued' | 'downloading' | 'converting' | 'separating' | 'complete' | 'failed';
 
@@ -59,7 +65,11 @@ export class StudioUnavailableError extends Error {
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${path}`, init);
+    // Resolved per call: the server can be changed in Settings at any time.
+    response = await fetch(apiUrl(path), {
+      ...init,
+      headers: apiHeaders(init?.headers as Record<string, string> | undefined),
+    });
   } catch (error) {
     // A network failure here means the local service is not running, which is
     // the normal case, not an error worth shouting about.
@@ -103,6 +113,15 @@ export async function probeService(): Promise<ServiceInfo | null> {
 export interface SeparateOptions {
   /** Which stems to produce. Fewer is faster. */
   stems: StemName[];
+  /**
+   * Human-readable label for the job, e.g. "Radiohead - Kid A".
+   *
+   * Separate from `filename` on purpose: the server reads the *filename* to
+   * decide which decoder to use, so it must keep its extension. Passing a
+   * prettified name as the filename is what made every upload fail with
+   * "this file type is not supported".
+   */
+  displayName?: string;
   signal?: AbortSignal;
   onUploadProgress?(fraction: number): void;
 }
@@ -113,19 +132,33 @@ export interface SeparateOptions {
  * `XMLHttpRequest` rather than `fetch`, purely because it reports upload
  * progress — a 60 MB FLAC over localhost is quick, but silence during an upload
  * reads as a hang.
+ *
+ * @param filename The real filename, **including its extension**. For a nicer
+ *   label in the UI use `options.displayName`.
  */
+export interface SubmitResult {
+  jobId: string;
+  /** True when this reused a previous job for the same audio instead of re-separating it. */
+  reused: boolean;
+}
+
 export function submitFile(
   file: Blob,
   filename: string,
   options: SeparateOptions,
-): Promise<{ jobId: string }> {
+): Promise<SubmitResult> {
   return new Promise((resolve, reject) => {
     const form = new FormData();
+    // `filename` must keep its extension — the server picks its decoder from it.
     form.append('file', file, filename);
     form.append('stems', options.stems.join(','));
+    if (options.displayName) form.append('name', options.displayName);
 
     const request = new XMLHttpRequest();
-    request.open('POST', `${API_BASE}/jobs`);
+    request.open('POST', apiUrl('/jobs'));
+    for (const [name, value] of Object.entries(apiHeaders())) {
+      request.setRequestHeader(name, value);
+    }
 
     request.upload.addEventListener('progress', (event) => {
       if (event.lengthComputable) options.onUploadProgress?.(event.loaded / event.total);
@@ -134,7 +167,8 @@ export function submitFile(
     request.addEventListener('load', () => {
       if (request.status >= 200 && request.status < 300) {
         try {
-          resolve(JSON.parse(request.responseText) as { jobId: string });
+          const body = JSON.parse(request.responseText) as { jobId: string; reused?: boolean };
+          resolve({ jobId: body.jobId, reused: body.reused ?? false });
         } catch {
           reject(new Error('The studio service returned an unreadable response.'));
         }
@@ -186,24 +220,30 @@ export async function waitForJob(
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
     const state = await getJob(jobId);
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     onUpdate(state);
     if (state.status === 'complete' || state.status === 'failed') return state;
 
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, 1500);
-      signal?.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          reject(new DOMException('Aborted', 'AbortError'));
-        },
-        { once: true },
-      );
+      // The listener is removed once the timer fires; otherwise every poll
+      // would leave one more behind on a long-lived signal.
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, 1500);
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 }
 
-/** Absolute URL for a produced stem, for playback and download. */
+/**
+ * URL for a produced stem, for playback and download. Used as an `<audio>` src
+ * and a link, neither of which can send headers, so it carries the token.
+ */
 export function stemUrl(jobId: string, stem: StemName): string {
-  return `${API_BASE}/jobs/${jobId}/stems/${stem}`;
+  return apiMediaUrl(`/jobs/${jobId}/stems/${stem}`);
 }

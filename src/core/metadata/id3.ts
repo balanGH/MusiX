@@ -70,6 +70,7 @@ const FRAMES_V23: Record<string, string> = {
   TBPM: 'bpm',
   TSRC: 'isrc',
   TCOP: 'copyright',
+  TCMP: 'compilation',
 };
 
 /** Frame id -> canonical key, for the three-character v2.2 ids. */
@@ -87,6 +88,7 @@ const FRAMES_V22: Record<string, string> = {
   TBP: 'bpm',
   TRC: 'isrc',
   TCR: 'copyright',
+  TCP: 'compilation',
 };
 
 /** TXXX descriptions MusiX understands, lowercased. */
@@ -162,7 +164,10 @@ export async function parseId3v2(
   const tagUnsync = (header.flags & 0x80) !== 0;
 
   let body = raw.subarray(10, raw.length);
-  if (tagUnsync) body = unsynchronise(body);
+  // v2.2/v2.3 unsynchronise the whole tag. v2.4 does it per frame (every frame
+  // then carries its own unsync flag), so undoing it here too would decode
+  // each frame twice and corrupt binary payloads such as JPEG covers.
+  if (tagUnsync && version < 4) body = unsynchronise(body);
 
   const reader = new ByteReader(body);
 
@@ -225,7 +230,7 @@ export async function parseId3v2(
     if (version === 4) {
       // Frame-level unsynchronisation, and a data-length indicator that
       // precedes the payload when the frame is compressed or encrypted.
-      if ((frameFlags & 0x0002) !== 0) data = unsynchronise(data);
+      if ((frameFlags & 0x0002) !== 0 || tagUnsync) data = unsynchronise(data);
       if ((frameFlags & 0x0001) !== 0) data = data.subarray(4);
       if ((frameFlags & 0x000c) !== 0) {
         // Compressed or encrypted frames are not supported; skipping one is far

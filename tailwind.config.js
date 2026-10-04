@@ -64,5 +64,10 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    // `touch:` — devices whose primary input cannot hover (phones, tablets).
+    // Hover-revealed controls use it to stay visible, since a finger has no
+    // hover state to reveal them with. Must match TOUCH_QUERY in src/ui/touch.ts.
+    ({ addVariant }) => addVariant('touch', '@media (hover: none)'),
+  ],
 };

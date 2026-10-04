@@ -80,6 +80,39 @@ function asNumber(value: unknown): number | null {
   return null;
 }
 
+/**
+ * "Empty" for `isEmpty` / `isNotEmpty`. A numeric 0 counts: it is how an
+ * unrated track, a never-played count and an unset timestamp are stored. The
+ * two operators share this one definition so they are exact complements —
+ * previously `rating 0` matched both.
+ */
+function isEmptyValue(value: unknown): boolean {
+  return value === null || value === undefined || value === '' || value === 0;
+}
+
+/**
+ * Text operators against a multi-valued genre field: `is`, `isNot`,
+ * `startsWith` and `endsWith` apply per genre, so a track tagged
+ * "Rock; Pop" *is* Rock. (`contains` / `notContains` work on the joined text
+ * and need no special case.)
+ */
+function matchesGenres(genres: readonly string[], rule: SmartRule): boolean | undefined {
+  const expected = String(rule.value ?? '').toLowerCase();
+  const folded = genres.map((genre) => genre.toLowerCase());
+  switch (rule.operator) {
+    case 'is':
+      return folded.some((genre) => genre === expected);
+    case 'isNot':
+      return !folded.some((genre) => genre === expected);
+    case 'startsWith':
+      return folded.some((genre) => genre.startsWith(expected));
+    case 'endsWith':
+      return folded.some((genre) => genre.endsWith(expected));
+    default:
+      return undefined;
+  }
+}
+
 export function matchesRule(track: Track, rule: SmartRule): boolean {
   const actual = fieldValue(track, rule.field);
 
@@ -89,9 +122,9 @@ export function matchesRule(track: Track, rule: SmartRule): boolean {
     case 'isFalse':
       return actual === false;
     case 'isEmpty':
-      return actual === null || actual === undefined || actual === '' || actual === 0;
+      return isEmptyValue(actual);
     case 'isNotEmpty':
-      return !(actual === null || actual === undefined || actual === '');
+      return !isEmptyValue(actual);
     case 'inLastDays': {
       const days = asNumber(rule.value);
       const timestamp = asNumber(actual);
@@ -130,6 +163,11 @@ export function matchesRule(track: Track, rule: SmartRule): boolean {
     }
     default:
       break;
+  }
+
+  if (rule.field === 'genre') {
+    const perGenre = matchesGenres(track.genres, rule);
+    if (perGenre !== undefined) return perGenre;
   }
 
   // String comparisons are case-insensitive, which is the only behaviour that

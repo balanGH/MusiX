@@ -97,7 +97,17 @@ export class Equalizer {
   private bands: EqBand[] = flatBands();
   private userPreampDb = 0;
   private enabled = false;
-  private bypassed = true;
+  /**
+   * Current routing, or `null` before the graph has been wired at all.
+   *
+   * The null matters: `applyRouting` returns early when nothing has changed,
+   * and a plain `true` here meant the constructor's first call — which also
+   * wants to bypass, since the EQ starts disabled and flat — decided there was
+   * nothing to do and left `input` connected to nothing. The result was total
+   * silence on a fresh launch until the user touched a slider, which finally
+   * made the state differ and wired the graph.
+   */
+  private bypassed: boolean | null = null;
   /** Where audio enters; never changes, so callers connect once. */
   readonly input: GainNode;
   /** Where audio leaves; never changes. */
@@ -207,7 +217,7 @@ export class Equalizer {
 
   /** True when audio is currently skipping the filter chain. */
   isBypassed(): boolean {
-    return this.bypassed;
+    return this.bypassed !== false;
   }
 
   /**

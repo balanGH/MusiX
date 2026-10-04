@@ -12,6 +12,7 @@ import { formatDuration, formatQuality } from '@core/utils';
 import type { Track } from '@core/types';
 import { Chip, IconButton, Menu, cx, type MenuItem } from './primitives';
 import { Artwork } from './Artwork';
+import { isInteractiveTarget, isTouchPrimary } from './touch';
 
 export interface TrackRowProps {
   track: Track | undefined;
@@ -68,8 +69,15 @@ export const TrackRow = memo(function TrackRow({
         isCurrent ? 'bg-accent/10' : 'hover:bg-surface-hover',
         className,
       )}
-      // Double-click plays, matching every desktop music app.
-      onDoubleClick={onPlay}
+      // Double-click plays, matching every desktop music app. A touch screen
+      // has no double-click worth relying on (a double tap zooms, or fires
+      // twice), so there a single tap anywhere outside a control plays.
+      onClick={(event) => {
+        if (isTouchPrimary() && !isInteractiveTarget(event.target, event.currentTarget)) onPlay();
+      }}
+      onDoubleClick={() => {
+        if (!isTouchPrimary()) onPlay();
+      }}
     >
       {/* Number, replaced by a play button on hover and by bars when current. */}
       <div className="relative flex h-8 w-8 shrink-0 items-center justify-center">
@@ -161,7 +169,10 @@ export const TrackRow = memo(function TrackRow({
         onClick={onToggleFavorite}
         className={cx(
           'transition-opacity',
-          track.favorite ? 'text-accent opacity-100' : 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100',
+          'mx-tap',
+          track.favorite
+            ? 'text-accent opacity-100'
+            : 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 touch:opacity-100',
         )}
       >
         <Heart className={cx('h-4 w-4', track.favorite && 'fill-current')} />
@@ -180,7 +191,7 @@ export const TrackRow = memo(function TrackRow({
               label={`More actions for ${track.title}`}
               size={30}
               onClick={toggle}
-              className="opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
+              className="mx-tap opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 touch:opacity-100"
             >
               <MoreHorizontal className="h-4 w-4" />
             </IconButton>

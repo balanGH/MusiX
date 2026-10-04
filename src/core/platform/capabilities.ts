@@ -9,7 +9,10 @@
  *   Android Chrome     file picker only, so files are copied into OPFS
  *   iOS Safari         file picker only, tighter storage quota
  *   Firefox            file picker only (no File System Access API at all)
+ *   MusiX Android app  MediaStore through a native plugin, files stay in place
  */
+
+import { nativeLibraryAvailable } from './nativeSource';
 
 export interface Capabilities {
   /** `showDirectoryPicker` — lets MusiX scan a folder without copying it. */
@@ -30,27 +33,11 @@ export interface Capabilities {
   touch: boolean;
   /** Running as an installed PWA. */
   standalone: boolean;
-  /** Running inside the Capacitor Android shell rather than a browser tab. */
-  native: boolean;
   /**
-   * `<input webkitdirectory>` picks a whole folder.
-   *
-   * Desktop browsers support it; Android's file chooser does not, so the
-   * onboarding copy has to say "files" rather than "folder" there.
+   * Inside the Android app with the MusicLibrary plugin: the phone's music is
+   * listed through MediaStore and read in place (nativeSource.ts).
    */
-  folderInput: boolean;
-}
-
-/**
- * Is MusiX running inside the native shell?
- *
- * Read off the global Capacitor injects rather than by importing
- * `@capacitor/core`, so `core/` keeps no dependency on the shell and still
- * builds for the plain web target.
- */
-function isNativeShell(): boolean {
-  const capacitor = (globalThis as { Capacitor?: { isNativePlatform?(): boolean } }).Capacitor;
-  return capacitor?.isNativePlatform?.() === true;
+  nativeLibrary: boolean;
 }
 
 let cached: Capabilities | null = null;
@@ -60,16 +47,8 @@ export function capabilities(): Capabilities {
 
   const nav = typeof navigator === 'undefined' ? undefined : navigator;
   const win = typeof window === 'undefined' ? undefined : window;
-  const native = isNativeShell();
 
   cached = {
-    native,
-    // Android's chooser has no notion of picking a directory, and the WebView
-    // silently ignores the attribute rather than reporting it.
-    folderInput:
-      !native &&
-      typeof document !== 'undefined' &&
-      'webkitdirectory' in document.createElement('input'),
     directoryPicker: typeof win?.showDirectoryPicker === 'function',
     opfs: typeof nav?.storage?.getDirectory === 'function',
     persistentStorage: typeof nav?.storage?.persist === 'function',
@@ -85,6 +64,7 @@ export function capabilities(): Capabilities {
       win?.matchMedia?.('(display-mode: standalone)').matches ||
       (nav as unknown as { standalone?: boolean })?.standalone === true ||
       false,
+    nativeLibrary: nativeLibraryAvailable(),
   };
   return cached;
 }
@@ -96,21 +76,22 @@ export function capabilities(): Capabilities {
  * `files` has to copy into OPFS, because a mobile browser cannot hand back a
  * handle that survives a reload — the alternative would be re-picking the whole
  * library on every launch.
+ * `native` is the Android app, which reads the phone's library in place.
  */
-export function importStrategy(): 'folder' | 'files' {
-  return capabilities().directoryPicker ? 'folder' : 'files';
+export function importStrategy(): 'folder' | 'files' | 'native' {
+  const caps = capabilities();
+  if (caps.nativeLibrary) return 'native';
+  return caps.directoryPicker ? 'folder' : 'files';
 }
 
 /** One-line explanation for the onboarding screen. */
 export function importStrategyExplanation(): string {
-  if (importStrategy() === 'folder') {
-    return 'MusiX will index the folder in place. Your files are never copied or moved.';
+  switch (importStrategy()) {
+    case 'native':
+      return 'MusiX reads the music already on this phone, where it is. Nothing is copied, moved or uploaded, and new songs appear when you rescan.';
+    case 'folder':
+      return 'MusiX will index the folder in place. Your files are never copied or moved.';
+    default:
+      return 'This browser cannot re-open a folder after a reload, so the files you pick are copied into MusiX’s private storage on this device.';
   }
-  if (capabilities().native) {
-    // Being specific about Android: the shell can reach the real filesystem,
-    // but that needs the native source provider (see docs/ANDROID.md). Until
-    // then the WebView is subject to the same limit as a browser tab.
-    return 'Pick the audio files you want. MusiX copies them into its own private storage on this device so they are always available offline.';
-  }
-  return 'This browser cannot re-open a folder after a reload, so the files you pick are copied into MusiX’s private storage on this device.';
 }

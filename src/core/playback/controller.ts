@@ -23,10 +23,15 @@ import {
 } from '../audio/mediaSession';
 import { getArtwork } from '../db/repositories/artwork';
 import { loadSession, saveSession, type PersistedSession } from '../db/repositories/settings';
-import { getTrack, getTracks, recordPlay, recordSkip } from '../db/repositories/tracks';
+import {
+  getTrack,
+  getTracks,
+  recordPlay,
+  recordSkip,
+  setFavorite as writeFavorite,
+} from '../db/repositories/tracks';
 import { createLogger, describeError } from '../logger';
 import { openTrackFile } from '../platform';
-import { debounce } from '../utils';
 import type { EqBand, QueueItem, RepeatMode, Track } from '../types';
 import * as Q from './queue';
 
@@ -42,6 +47,44 @@ const PLAY_THRESHOLD_MS = 4 * 60 * 1000;
 
 /** Below this, skipping backwards restarts the track instead of going back. */
 const RESTART_THRESHOLD_SEC = 3;
+
+/**
+ * Session saves: settle for this long after the last change, but never wait
+ * longer than the max. A plain trailing debounce never fires during playback,
+ * because progress re-arms it four times a second.
+ */
+const SESSION_SAVE_DEBOUNCE_MS = 1200;
+const SESSION_SAVE_MAX_WAIT_MS = 5000;
+
+/**
+ * A trailing debounce that still fires at least every `maxWaitMs` under a
+ * constant stream of calls, plus `flush()` to run a pending call right now.
+ */
+function debounceWithMaxWait(
+  fn: () => void,
+  waitMs: number,
+  maxWaitMs: number,
+): (() => void) & { flush(): void } {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let firstCallAt = 0;
+  const run = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    firstCallAt = 0;
+    fn();
+  };
+  const debounced = () => {
+    const now = Date.now();
+    if (firstCallAt === 0) firstCallAt = now;
+    if (timer) clearTimeout(timer);
+    const delay = Math.max(0, Math.min(waitMs, firstCallAt + maxWaitMs - now));
+    timer = setTimeout(run, delay);
+  };
+  debounced.flush = () => {
+    if (timer) run();
+  };
+  return debounced;
+}
 
 export interface PlayerState {
   queue: Q.QueueState;
@@ -81,10 +124,24 @@ class PlayerController {
   private handingOff = false;
   private sleepTimer: ReturnType<typeof setTimeout> | null = null;
   private sleepEndsAt: number | null = null;
+  /** Set when the sleep timer ran out with "finish the current track" on. */
+  private stopAfterTrack = false;
   private initialised = false;
+  /**
+   * Bumped whenever a different track is (or starts being) loaded. Every await
+   * in a load path re-checks it, so a superseded load quietly gives up instead
+   * of finishing last and leaving audio and UI on different tracks.
+   */
+  private loadSeq = 0;
+  /** Missing files skipped in a row on automatic advance, to stop a runaway. */
+  private autoSkips = 0;
 
   private readonly listeners = new Map<keyof PlayerEvents, Set<Listener<never>>>();
-  private readonly persist = debounce(() => void this.saveSession(), 1200);
+  private readonly persist = debounceWithMaxWait(
+    () => void this.saveSession(),
+    SESSION_SAVE_DEBOUNCE_MS,
+    SESSION_SAVE_MAX_WAIT_MS,
+  );
 
   // -------------------------------------------------------------------------
   // Setup
@@ -109,6 +166,19 @@ class PlayerController {
       seekTo: (position) => this.seek(position),
       seekBy: (offset) => this.seek(this.positionSec + offset),
     });
+
+    // A closing tab, or a mobile OS reclaiming a backgrounded app, gives no
+    // further chance to save, so write the session the moment the page hides.
+    if (typeof window !== 'undefined') {
+      const saveNow = () => {
+        this.persist.flush();
+        void this.saveSession();
+      };
+      window.addEventListener('pagehide', saveNow);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') saveNow();
+      });
+    }
   }
 
   /**
@@ -126,35 +196,28 @@ class PlayerController {
     const tracks = await getTracks(session.queue.map((item) => item.trackId));
     const existing = new Set(tracks.map((track) => track.id));
 
-    const remap = new Map<number, number>();
-    const items: QueueItem[] = [];
-    session.queue.forEach((item, oldIndex) => {
-      if (!existing.has(item.trackId)) return;
-      remap.set(oldIndex, items.length);
-      items.push(item);
-    });
-    if (items.length === 0) return false;
-
-    const storedOrder = session.order?.length === session.queue.length
-      ? session.order
-      : session.queue.map((_, index) => index);
-    const order = storedOrder
-      .filter((oldIndex) => remap.has(oldIndex))
-      .map((oldIndex) => remap.get(oldIndex)!);
-
-    this.queue = {
-      items,
-      order,
-      cursor: Math.min(Math.max(session.index, 0), order.length - 1),
-      shuffle: session.shuffle,
-      shuffleSeed: session.shuffleSeed,
-      repeat: session.repeat,
-    };
+    // The cursor is remapped by item, not clamped by index: clamping lands on
+    // the wrong track whenever a scan removed something earlier in the queue.
+    const savedTrackId = session.queue[session.order?.[session.index] ?? session.index]?.trackId;
+    const queue = Q.restoreQueue(
+      {
+        items: session.queue,
+        order: session.order,
+        cursor: session.index,
+        shuffle: session.shuffle,
+        shuffleSeed: session.shuffleSeed,
+        repeat: session.repeat,
+      },
+      existing,
+    );
+    if (queue.items.length === 0) return false;
+    this.queue = queue;
 
     const trackId = Q.currentTrackId(this.queue);
     if (trackId) {
       this.track = tracks.find((track) => track.id === trackId) ?? null;
-      this.positionSec = session.positionSec;
+      // The saved position belongs to the saved track, not whichever replaced it.
+      this.positionSec = trackId === savedTrackId ? session.positionSec : 0;
       this.durationSec = (this.track?.durationMs ?? 0) / 1000;
       await this.updateNowPlaying();
     }
@@ -214,6 +277,7 @@ class PlayerController {
   }
 
   stop(): void {
+    this.loadSeq++; // Drop any load still in flight.
     audioEngine.stop();
     this.flushHeardTime();
     this.positionSec = 0;
@@ -236,12 +300,16 @@ class PlayerController {
       return;
     }
     if (advanced.repeat === 'one' && reason === 'auto') {
+      // Each loop is a fresh listen, and counts towards the play count again.
+      this.heardMs = 0;
+      this.playRecorded = false;
+      this.lastTickAt = 0;
       this.seek(0);
       await audioEngine.play();
       return;
     }
     this.queue = advanced;
-    await this.loadCurrent({ autoplay: true });
+    await this.loadCurrent({ autoplay: true, auto: reason === 'auto' });
   }
 
   async previous(): Promise<void> {
@@ -271,6 +339,29 @@ class PlayerController {
     this.positionSec = audioEngine.currentTime;
     this.emit('progress', { positionSec: this.positionSec, durationSec: this.durationSec });
     this.persist();
+  }
+
+  /**
+   * Favourite (or unfavourite) a track, keeping the currently-loaded copy in
+   * sync when it's the one being changed.
+   *
+   * `usePlayer().track` — what the persistent player bar and Now Playing both
+   * read — is a snapshot held on this controller, not a live query. Writing
+   * straight to the database (the tracks repository's `setFavorite`) updates
+   * the stored row correctly but leaves that snapshot's `favorite` field
+   * exactly as it was, so a heart in either of those two places would toggle
+   * the database and then immediately look like nothing happened, no matter
+   * how many times it was clicked — clicking again would just toggle it back
+   * and forth invisibly. Every favourite control that might be showing the
+   * currently-playing track should call this rather than the repository
+   * function directly.
+   */
+  async setFavorite(trackId: string, favorite: boolean): Promise<void> {
+    const updated = await writeFavorite(trackId, favorite);
+    if (updated && this.track?.id === trackId) {
+      this.track = updated;
+      this.emitChange();
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -311,6 +402,7 @@ class PlayerController {
   clearQueue(): void {
     this.queue = Q.clearQueue(this.queue);
     this.track = null;
+    this.loadSeq++;
     audioEngine.stop();
     clearMediaSession();
     this.emitChange();
@@ -386,15 +478,11 @@ class PlayerController {
     this.sleepTimer = setTimeout(() => {
       this.sleepTimer = null;
       this.sleepEndsAt = null;
-      if (options.finishTrack) {
-        // Let the current track end naturally, then stop.
-        const off = audioEngine.on('ended', () => {
-          off();
-          this.pause();
-        });
-      } else {
-        this.pause();
-      }
+      // "Finish the track" is a flag `onEnded`/`onNearEnd` honour, rather than
+      // an extra `ended` listener: that raced the normal advance (which then
+      // started the next track anyway) and leaked if the timer was cancelled.
+      if (options.finishTrack && this.status === 'playing') this.stopAfterTrack = true;
+      else this.pause();
       this.emitChange();
     }, ms);
     this.emitChange();
@@ -404,6 +492,7 @@ class PlayerController {
     if (this.sleepTimer) clearTimeout(this.sleepTimer);
     this.sleepTimer = null;
     this.sleepEndsAt = null;
+    this.stopAfterTrack = false;
     this.emitChange();
   }
 
@@ -445,10 +534,24 @@ class PlayerController {
   // Internals
   // -------------------------------------------------------------------------
 
-  private async loadCurrent(options: { autoplay: boolean; startAtSec?: number }): Promise<void> {
+  private async loadCurrent(options: {
+    autoplay: boolean;
+    startAtSec?: number;
+    /** An automatic advance: a missing file is skipped rather than stalled on. */
+    auto?: boolean;
+  }): Promise<void> {
+    const seq = ++this.loadSeq;
     const trackId = Q.currentTrackId(this.queue);
     if (!trackId) {
+      // The queue is empty: nothing may keep playing behind a disabled Play button.
+      this.flushHeardTime();
       this.track = null;
+      this.positionSec = 0;
+      this.durationSec = 0;
+      this.preloadedTrackId = null;
+      audioEngine.stop();
+      clearMediaSession();
+      this.emit('trackChange', { track: null });
       this.emitChange();
       return;
     }
@@ -460,13 +563,13 @@ class PlayerController {
     this.error = null;
 
     const track = await getTrack(trackId);
+    if (seq !== this.loadSeq) return;
     if (!track) {
       // The row is gone; drop it from the queue and move on rather than stalling.
       log.warn(`track ${trackId} no longer exists; skipping`);
       const item = Q.currentItem(this.queue);
       if (item) this.queue = Q.removeItem(this.queue, item.uid);
-      if (Q.currentTrackId(this.queue)) await this.loadCurrent(options);
-      else this.emitChange();
+      await this.loadCurrent(options);
       return;
     }
 
@@ -477,10 +580,15 @@ class PlayerController {
     this.emitChange();
 
     const file = await openTrackFile(track);
+    if (seq !== this.loadSeq) return;
     if (!file) {
+      // Stop first: otherwise the previous track keeps playing under a UI that
+      // shows this one, and Play/Pause no longer reaches it.
+      audioEngine.stop();
       this.fail(
         `“${track.title}” could not be opened. The file may have been moved or the folder needs reconnecting.`,
       );
+      if (options.auto) await this.skipUnplayable();
       return;
     }
 
@@ -489,12 +597,37 @@ class PlayerController {
         autoplay: options.autoplay,
         startAtSec: options.startAtSec,
       });
+      if (seq !== this.loadSeq) return;
+      this.autoSkips = 0;
       this.preloadedTrackId = null;
       await this.updateNowPlaying();
+      if (seq !== this.loadSeq) return;
       this.persist();
     } catch (error) {
+      if (seq !== this.loadSeq) return;
       this.fail(describeError(error));
     }
+  }
+
+  /**
+   * Move past a track that could not be opened during an automatic advance.
+   *
+   * Capped at one lap of the queue, so "repeat all" over a disconnected folder
+   * stops with an error instead of spinning forever.
+   */
+  private async skipUnplayable(): Promise<void> {
+    if (++this.autoSkips >= Q.queueLength(this.queue)) {
+      this.autoSkips = 0;
+      return;
+    }
+    // 'user' so that repeat-one moves on instead of retrying the same file.
+    const advanced = Q.advance(this.queue, 'user');
+    if (!advanced) {
+      this.autoSkips = 0;
+      return;
+    }
+    this.queue = advanced;
+    await this.loadCurrent({ autoplay: true, auto: true });
   }
 
   private onProgress(snapshot: EngineSnapshot): void {
@@ -516,12 +649,15 @@ class PlayerController {
   }
 
   private onStatusChange(snapshot: EngineSnapshot): void {
+    const wasPlaying = this.status === 'playing';
     this.status = snapshot.status;
     if (snapshot.status !== 'playing') this.lastTickAt = 0;
     setPlaybackState(
       snapshot.status === 'playing' ? 'playing' : snapshot.status === 'paused' ? 'paused' : 'none',
     );
     this.emitChange();
+    // Progress stops arriving once paused, so save the exact resume point now.
+    if (wasPlaying && snapshot.status === 'paused') this.persist();
   }
 
   /**
@@ -533,27 +669,51 @@ class PlayerController {
    */
   private async onNearEnd(): Promise<void> {
     if (this.handingOff) return;
+    // The sleep timer wants this track to end and nothing to follow it.
+    if (this.stopAfterTrack) return;
     const next = Q.peekNext(this.queue);
     if (!next || next.trackId === this.track?.id) return;
     if (this.preloadedTrackId === next.trackId) return;
 
+    // If the user moves on while the next file is being opened, this preload
+    // belongs to a track change that no longer applies; handing off anyway
+    // would advance the queue a second time.
+    const seq = this.loadSeq;
+    const stale = () => seq !== this.loadSeq || Q.peekNext(this.queue)?.uid !== next.uid;
+
     const track = await getTrack(next.trackId);
-    if (!track) return;
+    if (!track || stale()) return;
     const file = await openTrackFile(track);
+    if (stale()) return;
     if (!file) {
       log.warn(`could not preload ${track.title}`);
       return;
     }
     await audioEngine.preload(track, file);
+    if (stale()) return;
     this.preloadedTrackId = track.id;
 
     // With crossfade on, the overlap starts now.
-    if (audioEngine.getCrossfade() > 0) await this.performHandoff();
+    if (audioEngine.getCrossfade() > 0 && !this.stopAfterTrack) await this.performHandoff();
   }
 
   private async onEnded(): Promise<void> {
     this.flushHeardTime();
     if (this.handingOff) return;
+    if (this.stopAfterTrack) {
+      // Sleep timer: the track has finished, so stop here with the next one
+      // cued, ready for whenever the user presses play again.
+      this.stopAfterTrack = false;
+      this.preloadedTrackId = null;
+      const advanced = Q.advance(this.queue, 'user');
+      if (advanced) {
+        this.queue = advanced;
+        await this.loadCurrent({ autoplay: false });
+      } else {
+        this.emitChange();
+      }
+      return;
+    }
     // Crossfade already moved us on; a plain end has to advance now.
     if (this.preloadedTrackId && audioEngine.getCrossfade() === 0) {
       await this.performHandoff();
@@ -567,16 +727,22 @@ class PlayerController {
     if (this.handingOff) return;
     this.handingOff = true;
     try {
+      const seq = this.loadSeq;
       const advanced = Q.advance(this.queue, 'auto');
       if (!advanced) return;
       const swapped = await audioEngine.handoff();
+      // A user skip during the swap has already chosen what plays next.
+      if (seq !== this.loadSeq) return;
       if (!swapped) {
         await this.next('auto');
         return;
       }
+      const handoffSeq = ++this.loadSeq;
       this.queue = advanced;
       const trackId = Q.currentTrackId(this.queue);
-      this.track = trackId ? ((await getTrack(trackId)) ?? null) : null;
+      const track = trackId ? ((await getTrack(trackId)) ?? null) : null;
+      if (handoffSeq !== this.loadSeq) return;
+      this.track = track;
       this.durationSec = (this.track?.durationMs ?? 0) / 1000;
       this.heardMs = 0;
       this.playRecorded = false;
@@ -605,7 +771,11 @@ class PlayerController {
 
   private async maybeRecordPlay(): Promise<void> {
     if (this.playRecorded || !this.track) return;
-    const threshold = Math.min(this.track.durationMs * PLAY_THRESHOLD_RATIO, PLAY_THRESHOLD_MS);
+    // An unknown duration (0) would make the threshold zero and count a play on
+    // the first tick; fall back to what the element reports, then to the cap.
+    const durationMs = this.track.durationMs > 0 ? this.track.durationMs : this.durationSec * 1000;
+    const threshold =
+      durationMs > 0 ? Math.min(durationMs * PLAY_THRESHOLD_RATIO, PLAY_THRESHOLD_MS) : PLAY_THRESHOLD_MS;
     if (this.heardMs < threshold) return;
     this.playRecorded = true;
     try {

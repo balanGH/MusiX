@@ -12,7 +12,8 @@
  * would fail (spec §41).
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { ChevronRight, Folder, FolderOpen, HardDrive, Info } from 'lucide-react';
 import { childFolders, folderPath } from '@core/db/repositories/library';
 import { tracksByFolder } from '@core/db/repositories/tracks';
@@ -28,7 +29,17 @@ export function FoldersPage() {
   const revision = useLibrary((state) => state.revision);
   const sources = useLibrary((state) => state.sources);
 
-  const [currentId, setCurrentId] = useState<string | null>(null);
+  // The open folder lives in the URL (`?folder=`), so each level is a history
+  // entry: Back climbs out of a folder instead of leaving the page, and a
+  // folder can be linked to or restored on reload.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const currentId = searchParams.get('folder');
+  const setCurrentId = useCallback(
+    (id: string | null) => {
+      setSearchParams(id ? { folder: id } : {});
+    },
+    [setSearchParams],
+  );
   const [breadcrumb, setBreadcrumb] = useState<FolderRecord[]>([]);
   const [children, setChildren] = useState<FolderRecord[]>([]);
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -42,13 +53,22 @@ export function FoldersPage() {
       childFolders(currentId),
       currentId ? tracksByFolder(currentId) : Promise.resolve([]),
       currentId ? folderPath(currentId) : Promise.resolve([]),
-    ]).then(([foundChildren, foundTracks, path]) => {
-      if (cancelled) return;
-      setChildren(foundChildren);
-      setTracks(foundTracks);
-      setBreadcrumb(path);
-      setLoading(false);
-    });
+    ]).then(
+      ([foundChildren, foundTracks, path]) => {
+        if (cancelled) return;
+        setChildren(foundChildren);
+        setTracks(foundTracks);
+        setBreadcrumb(path);
+        setLoading(false);
+      },
+      () => {
+        if (cancelled) return;
+        setChildren([]);
+        setTracks([]);
+        setBreadcrumb([]);
+        setLoading(false);
+      },
+    );
 
     return () => {
       cancelled = true;

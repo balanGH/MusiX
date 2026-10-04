@@ -168,8 +168,10 @@ export interface Folder {
  * never copied or moved (spec §9). Desktop Chromium only.
  * `imported`  - individually picked files copied into the origin-private file
  * system, which is the only way mobile browsers can offer persistence.
+ * `native`    - the phone's music library as Android's MediaStore lists it, in
+ * the MusiX app only. Files are read in place (core/platform/nativeSource.ts).
  */
-export type SourceKind = 'directory' | 'imported';
+export type SourceKind = 'directory' | 'imported' | 'native';
 
 export interface MusicSource {
   id: string;
@@ -180,6 +182,11 @@ export interface MusicSource {
   trackCount: number;
   /** Key into the `handles` store; null for `imported` sources. */
   handleKey: string | null;
+  /**
+   * `native` only: folders the user left out, as paths from the storage root
+   * (e.g. "WhatsApp"). Absent on rows written before this existed.
+   */
+  excludedFolders?: string[];
 }
 
 export type PlaylistKind = 'manual' | 'smart';
@@ -228,6 +235,24 @@ export interface Artwork {
   /** Dominant colour as "r g b" — the CSS token format (spec §38). */
   dominant: string | null;
   createdAt: number;
+}
+
+/**
+ * An artist photo fetched online, keyed by artist id (spec §32).
+ *
+ * Kept out of the `Artist` row itself: aggregates are wiped and rebuilt whole
+ * on every scan (see `replaceAggregates`), which would silently discard a
+ * fetched photo the next time the library rescans. This store is untouched by
+ * that rebuild, the same way `lyrics` survives a rescan independently of
+ * `tracks`.
+ */
+export interface ArtistPhoto {
+  /** Same id as the `Artist` row it belongs to. */
+  id: string;
+  /** Points into the shared `artwork` store — the image itself is deduped there. */
+  artworkId: string;
+  source: 'deezer';
+  updatedAt: number;
 }
 
 export type LyricsKind = 'plain' | 'lrc' | 'ttml';

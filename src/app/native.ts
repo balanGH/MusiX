@@ -10,7 +10,7 @@
  */
 
 import { createLogger } from '@core/logger';
-import { capabilities } from '@core/platform';
+import { isNativeApp } from '@core/platform/native';
 import { useUi } from '@state/uiStore';
 
 const log = createLogger('native');
@@ -18,7 +18,7 @@ const log = createLogger('native');
 let initialised = false;
 
 export async function initNative(): Promise<void> {
-  if (initialised || !capabilities().native) return;
+  if (initialised || !isNativeApp()) return;
   initialised = true;
 
   await Promise.all([configureStatusBar(), wireBackButton()]);

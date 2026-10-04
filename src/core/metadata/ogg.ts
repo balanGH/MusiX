@@ -23,7 +23,8 @@ interface OggPage {
   end: number;
 }
 
-function readPage(bytes: Uint8Array, at: number): OggPage | null {
+/** `base` is added to `end` so a page read into its own buffer reports a file offset. */
+function readPage(bytes: Uint8Array, at: number, base = 0): OggPage | null {
   if (at + 27 > bytes.length) return null;
   const reader = new ByteReader(bytes).seek(at);
   if (reader.u32be() !== OGG_MAGIC) return null;
@@ -47,8 +48,36 @@ function readPage(bytes: Uint8Array, at: number): OggPage | null {
     granulePosition,
     serial,
     payload: reader.bytesOf(payloadLength),
-    end: reader.offset,
+    end: base + reader.offset,
   };
+}
+
+/** Header pages to walk before giving up on finding the comment packet. */
+const MAX_HEADER_PAGES = 1024;
+/** Upper bound on an accumulated comment packet (covers are rarely > a few MB). */
+const MAX_COMMENT_BYTES = 32 * 1024 * 1024;
+
+/** Read one page straight from the source: header + segment table, then the body. */
+async function readPageAt(source: ByteSource, at: number): Promise<OggPage | null> {
+  const header = await source.read(at, 27 + 255);
+  if (header.length < 27) return null;
+  const segmentCount = header[26]!;
+  if (header.length < 27 + segmentCount) return null;
+  let payloadLength = 0;
+  for (let i = 0; i < segmentCount; i++) payloadLength += header[27 + i]!;
+  const bytes = await source.read(at, 27 + segmentCount + payloadLength);
+  return readPage(bytes, 0, at);
+}
+
+function concat(parts: readonly Uint8Array[], total: number): Uint8Array {
+  if (parts.length === 1) return parts[0]!;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
 }
 
 export async function isOgg(source: ByteSource): Promise<boolean> {
@@ -74,9 +103,12 @@ export async function parseOgg(source: ByteSource, tags: RawTags): Promise<OggRe
     lossless: false,
   };
 
-  // The identification and comment headers are always within the first pages.
-  const head = await source.read(0, 128 * 1024);
-  if (head.length < 27) {
+  // The identification and comment headers are always within the first pages,
+  // but a comment packet carrying a large METADATA_BLOCK_PICTURE can span
+  // many of them — so pages are read one at a time from the source rather
+  // than from a fixed-size head buffer, which used to truncate the packet
+  // (losing the cover and every tag after it) past 128 KiB.
+  if (source.size < 27) {
     warnings.push('file too short to be an Ogg stream');
     return { stream, warnings };
   }
@@ -86,10 +118,12 @@ export async function parseOgg(source: ByteSource, tags: RawTags): Promise<OggRe
   let nominalBitrate = 0;
   let preSkip = 0;
   /** Comment packets can span pages, so payloads are accumulated. */
-  let commentBuffer: Uint8Array | null = null;
+  const commentParts: Uint8Array[] = [];
+  let commentBytes = 0;
+  let inComment = false;
 
-  for (let page = 0; page < 64; page++) {
-    const parsed = readPage(head, cursor);
+  for (let page = 0; page < MAX_HEADER_PAGES; page++) {
+    const parsed = await readPageAt(source, cursor);
     if (!parsed) break;
     const payload = parsed.payload;
 
@@ -115,24 +149,31 @@ export async function parseOgg(source: ByteSource, tags: RawTags): Promise<OggRe
         warnings.push('unrecognised Ogg codec');
         break;
       }
-    } else if (startsWith(payload, 'OpusTags')) {
-      commentBuffer = payload.subarray(8);
-    } else if (payload[0] === 0x03 && startsWith(payload.subarray(1), 'vorbis')) {
-      commentBuffer = payload.subarray(7);
-    } else if (commentBuffer && (parsed.headerType & 0x01) !== 0) {
+    } else if (!inComment && startsWith(payload, 'OpusTags')) {
+      inComment = true;
+      commentParts.push(payload.subarray(8));
+      commentBytes += payload.length - 8;
+    } else if (!inComment && payload[0] === 0x03 && startsWith(payload.subarray(1), 'vorbis')) {
+      inComment = true;
+      commentParts.push(payload.subarray(7));
+      commentBytes += payload.length - 7;
+    } else if (inComment && (parsed.headerType & 0x01) !== 0) {
       // Continuation of the comment packet.
-      const merged: Uint8Array = new Uint8Array(commentBuffer.length + payload.length);
-      merged.set(commentBuffer);
-      merged.set(payload, commentBuffer.length);
-      commentBuffer = merged;
-    } else if (commentBuffer) {
+      if (commentBytes + payload.length > MAX_COMMENT_BYTES) {
+        warnings.push('Ogg comment header too large; truncated');
+        break;
+      }
+      commentParts.push(payload);
+      commentBytes += payload.length;
+    } else if (inComment) {
       break; // Comments complete; the rest is audio.
     }
 
     cursor = parsed.end;
-    if (cursor >= head.length) break;
+    if (cursor >= source.size) break;
   }
 
+  const commentBuffer = inComment ? concat(commentParts, commentBytes) : null;
   if (commentBuffer) parseVorbisComments(commentBuffer, tags, warnings);
   else warnings.push('no Vorbis comment header found');
 

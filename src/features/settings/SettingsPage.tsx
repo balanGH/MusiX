@@ -20,7 +20,9 @@ import {
   Trash2,
 } from 'lucide-react';
 import { deleteDatabase, storageReport, storeCounts, type StorageReport } from '@core/db/database';
-import { importedStorageUsage } from '@core/platform';
+import { capabilities, importedStorageUsage } from '@core/platform';
+import type { SourceKind } from '@core/types';
+import { PhoneMusicPicker } from '@features/onboarding/PhoneMusicPicker';
 import { formatBytes, formatCount, formatRelative } from '@core/utils';
 import { clearArtworkCache } from '@state/artworkCache';
 import { useLibrary } from '@state/libraryStore';
@@ -29,8 +31,16 @@ import { useUi } from '@state/uiStore';
 import { pruneOrphanArtwork } from '@core/db/repositories/artwork';
 import { clearHistory, countHistory } from '@core/db/repositories/history';
 import { SHORTCUTS } from '@app/useKeyboardShortcuts';
+import { DownloadFolderSection } from './DownloadFolderSection';
+import { ServerSection } from './ServerSection';
 import { Button, Select, Toggle, cx } from '@ui/primitives';
 import { PageHeader } from '@ui/PageHeader';
+
+const SOURCE_KIND_LABEL: Record<SourceKind, string> = {
+  directory: 'Indexed in place',
+  imported: 'Copied into MusiX',
+  native: 'On this phone',
+};
 
 export function SettingsPage() {
   const settings = useSettings();
@@ -45,6 +55,9 @@ export function SettingsPage() {
   const [opfsBytes, setOpfsBytes] = useState(0);
   const [rows, setRows] = useState<Record<string, number>>({});
   const [historyCount, setHistoryCount] = useState(0);
+  const [choosingFolders, setChoosingFolders] = useState(false);
+  const nativeLibrary = capabilities().nativeLibrary;
+  const phoneSource = sources.find((source) => source.kind === 'native');
 
   const refreshStorage = async () => {
     const [report, opfs, counted, history] = await Promise.all([
@@ -158,7 +171,7 @@ export function SettingsPage() {
 
         {/* ---- Music folders ---- */}
         <Section icon={<FolderOpen className="h-4 w-4" />} title="Music folders">
-          {sources.length === 0 ? (
+          {sources.length === 0 && nativeLibrary ? null : sources.length === 0 ? (
             <p className="py-3 text-sm text-muted">No folders added yet.</p>
           ) : (
             <ul className="divide-y divide-line">
@@ -168,11 +181,24 @@ export function SettingsPage() {
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{source.name}</p>
                     <p className="text-2xs text-muted">
-                      {source.kind === 'directory' ? 'Indexed in place' : 'Copied into MusiX'} ·{' '}
+                      {SOURCE_KIND_LABEL[source.kind]} ·{' '}
                       {formatCount(source.trackCount)} tracks ·{' '}
                       {source.lastScanAt ? `scanned ${formatRelative(source.lastScanAt)}` : 'never scanned'}
+                      {source.kind === 'native' && (source.excludedFolders?.length ?? 0) > 0 && (
+                        <> · {formatCount(source.excludedFolders!.length)} folders left out</>
+                      )}
                     </p>
                   </div>
+                  {source.kind === 'native' && nativeLibrary && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setChoosingFolders((open) => !open)}
+                    >
+                      Folders
+                    </Button>
+                  )}
+                  {/* For the phone library a rescan re-queries Android's media index. */}
                   <Button size="sm" variant="ghost" onClick={() => void scanSource(source.id, 'full')}>
                     Rescan
                   </Button>
@@ -183,9 +209,11 @@ export function SettingsPage() {
                       const ok = await confirm({
                         title: `Remove “${source.name}”?`,
                         body:
-                          source.kind === 'directory'
-                            ? 'MusiX forgets this folder and its tracks. The files on your disk are not touched.'
-                            : 'MusiX deletes its copies of these files and forgets the tracks. Your original files are not touched.',
+                          source.kind === 'native'
+                            ? 'MusiX forgets these tracks. The songs on your phone are not touched.'
+                            : source.kind === 'directory'
+                              ? 'MusiX forgets this folder and its tracks. The files on your disk are not touched.'
+                              : 'MusiX deletes its copies of these files and forgets the tracks. Your original files are not touched.',
                         preview: [
                           `${formatCount(source.trackCount)} tracks will be removed from the library`,
                           ...(source.kind === 'imported'
@@ -207,7 +235,34 @@ export function SettingsPage() {
               ))}
             </ul>
           )}
+
+          {/* Android app: the phone's library is added or re-chosen here. */}
+          {nativeLibrary && (!phoneSource || choosingFolders) && (
+            <div className="py-3">
+              {!phoneSource && (
+                <p className="mb-3 text-xs leading-relaxed text-muted">
+                  Add the songs already on this phone. They are read where they are; nothing is
+                  copied.
+                </p>
+              )}
+              <PhoneMusicPicker
+                key={phoneSource ? 'update' : 'add'}
+                initialExcluded={phoneSource ? (phoneSource.excludedFolders ?? []) : undefined}
+                autoStart={choosingFolders}
+                offerChoice={!phoneSource}
+                startLabel={phoneSource ? 'Scan phone music again' : 'Scan all music on this phone'}
+                onDone={() => setChoosingFolders(false)}
+                onCancel={() => setChoosingFolders(false)}
+              />
+            </div>
+          )}
         </Section>
+
+        {/* ---- PC server (Studio and Download on the phone) ---- */}
+        <ServerSection />
+
+        {/* ---- Download folder (only when the studio service is running) ---- */}
+        <DownloadFolderSection />
 
         {/* ---- Privacy ---- */}
         <Section icon={<ShieldCheck className="h-4 w-4" />} title="Privacy">
@@ -226,17 +281,15 @@ export function SettingsPage() {
           />
           <Toggle
             label="Online artwork"
-            description="Cover Art Archive. Arrives in Phase 2."
+            description="Deezer, for a real artist photo when you look one up from their page. Album-art lookup from Cover Art Archive arrives in Phase 2."
             checked={settings.onlineArtwork}
             onChange={(checked) => settings.patch({ onlineArtwork: checked })}
-            disabled
           />
           <Toggle
-            label="Online lyrics"
-            description="Arrives in Phase 3. Embedded lyrics already work offline."
+            label="Online lyrics for downloads"
+            description="Looks up lyrics from LRCLIB when you download a song, and embeds them in the file — synced ones scroll with playback in Now Playing. Lyrics already inside your own files always work offline, with or without this."
             checked={settings.onlineLyrics}
             onChange={(checked) => settings.patch({ onlineLyrics: checked })}
-            disabled
           />
         </Section>
 

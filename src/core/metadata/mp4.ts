@@ -54,6 +54,7 @@ const ILST_KEYS: Record<string, string> = {
   '©lyr': 'lyrics',
   cprt: 'copyright',
   tmpo: 'bpm',
+  cpil: 'compilation',
 };
 
 /** `----` freeform atom names, as `com.apple.iTunes:NAME` lowercased. */
@@ -145,33 +146,16 @@ export async function parseMp4(source: ByteSource, tags: RawTags): Promise<Mp4Re
   const ftypBrand = await source.read(8, 4);
   const brand = ftypBrand.length === 4 ? String.fromCharCode(...ftypBrand) : '';
 
-  let timescale = 0;
-  let durationUnits = 0;
+  // A chaptered M4B/M4A has a text (chapter) `trak` next to the audio one, so
+  // each trak is read on its own and the one whose handler is 'soun' is used —
+  // taking whichever trak came last reported "TEXT" and the chapter length.
+  const traks: TrakInfo[] = [];
 
   await walk(source, 0, source.size, 0, async (atom) => {
     switch (atom.type) {
-      case 'mdhd': {
-        const body = await source.read(atom.bodyAt, Math.min(atom.bodySize, 32));
-        if (body.length < 24) return false;
-        const reader = new ByteReader(body);
-        const version = reader.u8();
-        reader.skip(3); // flags
-        if (version === 1) {
-          reader.skip(16); // 64-bit creation + modification times
-          timescale = reader.u32be();
-          durationUnits = reader.u64be();
-        } else {
-          reader.skip(8); // 32-bit creation + modification times
-          timescale = reader.u32be();
-          durationUnits = reader.u32be();
-        }
+      case 'trak':
+        traks.push(await readTrak(source, atom, stream));
         return false;
-      }
-      case 'stsd': {
-        const body = await source.read(atom.bodyAt, Math.min(atom.bodySize, 512));
-        readSampleDescription(body, stream);
-        return false;
-      }
       case 'ilst':
         // Descend; children are handled below.
         return true;
@@ -190,6 +174,11 @@ export async function parseMp4(source: ByteSource, tags: RawTags): Promise<Mp4Re
     }
   });
 
+  const audio = traks.find((trak) => trak.handler === 'soun') ?? traks[0];
+  if (audio) Object.assign(stream, audio.stream);
+  const timescale = audio?.timescale ?? 0;
+  const durationUnits = audio?.durationUnits ?? 0;
+
   if (timescale > 0 && durationUnits > 0) {
     stream.durationMs = Math.round((durationUnits / timescale) * 1000);
     stream.bitrateKbps = Math.round((source.size * 8) / stream.durationMs);
@@ -205,6 +194,59 @@ export async function parseMp4(source: ByteSource, tags: RawTags): Promise<Mp4Re
   }
 
   return { stream, warnings };
+}
+
+interface TrakInfo {
+  /** `hdlr` handler type: 'soun' for audio, 'text' / 'sbtl' for chapters. */
+  handler: string;
+  timescale: number;
+  durationUnits: number;
+  /** Stream fields this trak's `stsd` set, applied only if it is chosen. */
+  stream: Partial<StreamInfo>;
+}
+
+async function readTrak(source: ByteSource, trak: Atom, defaults: StreamInfo): Promise<TrakInfo> {
+  const info: TrakInfo = { handler: '', timescale: 0, durationUnits: 0, stream: {} };
+  await walk(source, trak.bodyAt, trak.end, 1, async (atom) => {
+    switch (atom.type) {
+      case 'hdlr': {
+        const body = await source.read(atom.bodyAt, Math.min(atom.bodySize, 12));
+        // version/flags (4), pre_defined (4), handler_type (4)
+        if (body.length >= 12) info.handler = String.fromCharCode(...body.subarray(8, 12));
+        return false;
+      }
+      case 'mdhd': {
+        const body = await source.read(atom.bodyAt, Math.min(atom.bodySize, 32));
+        if (body.length < 24) return false;
+        const reader = new ByteReader(body);
+        const version = reader.u8();
+        reader.skip(3); // flags
+        if (version === 1) {
+          reader.skip(16); // 64-bit creation + modification times
+          info.timescale = reader.u32be();
+          info.durationUnits = reader.u64be();
+        } else {
+          reader.skip(8); // 32-bit creation + modification times
+          info.timescale = reader.u32be();
+          info.durationUnits = reader.u32be();
+        }
+        return false;
+      }
+      case 'stsd': {
+        const body = await source.read(atom.bodyAt, Math.min(atom.bodySize, 512));
+        const scratch: StreamInfo = { ...defaults };
+        readSampleDescription(body, scratch);
+        info.stream = scratch;
+        return false;
+      }
+      case 'meta':
+      case 'udta':
+        return false;
+      default:
+        return true;
+    }
+  });
+  return info;
 }
 
 /** `stsd` names the codec and, for ALAC, its real bit depth. */
@@ -224,7 +266,8 @@ function readSampleDescription(body: Uint8Array, stream: StreamInfo): void {
     const channels = reader.u16be();
     const sampleSize = reader.u16be();
     reader.skip(4);
-    const sampleRate = reader.u32be() >> 16;
+    // Unsigned shift: 44100 << 16 overflows int32, and `>>` made it negative.
+    const sampleRate = reader.u32be() >>> 16;
 
     if (channels > 0 && channels <= 32) stream.channels = channels;
     if (sampleRate > 0) stream.sampleRate = sampleRate;

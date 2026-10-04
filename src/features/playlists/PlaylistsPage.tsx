@@ -22,6 +22,7 @@ export function PlaylistsPage() {
   const navigate = useNavigate();
   const toast = useUi((state) => state.toast);
   const confirm = useUi((state) => state.requestConfirm);
+  const playlistsRevision = useUi((state) => state.playlistsRevision);
 
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [loading, setLoading] = useState(true);
@@ -35,7 +36,7 @@ export function PlaylistsPage() {
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, playlistsRevision]);
 
   const create = async () => {
     const trimmed = name.trim();
@@ -215,7 +216,7 @@ function PlaylistCard({
             label={`Delete ${playlist.name}`}
             size={30}
             onClick={onDelete}
-            className="shrink-0 opacity-0 group-hover/pl:opacity-100 focus-visible:opacity-100"
+            className="mx-tap shrink-0 opacity-0 group-hover/pl:opacity-100 focus-visible:opacity-100 touch:opacity-100"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </IconButton>

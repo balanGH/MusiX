@@ -76,19 +76,28 @@ export function initPlayer(): void {
   });
 
   // Push the persisted mixer settings into the engine, then keep them in sync.
-  const applySettings = (settings: ReturnType<typeof useSettings.getState>) => {
-    audioEngine.setVolume(settings.volume);
-    audioEngine.setMuted(settings.muted);
-    audioEngine.setPlaybackRate(settings.playbackRate);
-    audioEngine.setCrossfade(settings.crossfadeSec);
-    audioEngine.setReplayGain(settings.replayGainMode, settings.preventClipping);
-    audioEngine.setEqBands(settings.eqBands);
-    audioEngine.setEqPreamp(settings.eqPreampDb);
-    audioEngine.setEqEnabled(settings.eqEnabled);
+  //
+  // Only what actually changed is re-applied: some setters touch live gain
+  // automation (ReplayGain re-applies the deck gain), and an unrelated
+  // settings write — the theme, say — must not cut an in-progress crossfade.
+  type Settings = ReturnType<typeof useSettings.getState>;
+  const applySettings = (settings: Settings, prev?: Settings) => {
+    const changed = <K extends keyof Settings>(...keys: K[]) =>
+      !prev || keys.some((key) => settings[key] !== prev[key]);
+    if (changed('volume')) audioEngine.setVolume(settings.volume);
+    if (changed('muted')) audioEngine.setMuted(settings.muted);
+    if (changed('playbackRate')) audioEngine.setPlaybackRate(settings.playbackRate);
+    if (changed('crossfadeSec')) audioEngine.setCrossfade(settings.crossfadeSec);
+    if (changed('replayGainMode', 'preventClipping')) {
+      audioEngine.setReplayGain(settings.replayGainMode, settings.preventClipping);
+    }
+    if (changed('eqBands')) audioEngine.setEqBands(settings.eqBands);
+    if (changed('eqPreampDb')) audioEngine.setEqPreamp(settings.eqPreampDb);
+    if (changed('eqEnabled')) audioEngine.setEqEnabled(settings.eqEnabled);
   };
 
   applySettings(useSettings.getState());
-  useSettings.subscribe(applySettings);
+  useSettings.subscribe((settings, prev) => applySettings(settings, prev));
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +117,16 @@ export const playerActions = {
   previous: () => player.previous(),
   seek: (positionSec: number) => player.seek(positionSec),
   stop: () => player.stop(),
+
+  /**
+   * Favourite (or unfavourite) a track.
+   *
+   * Routes through the controller rather than writing to the database
+   * directly, so that when `trackId` is the track currently loaded, the
+   * player bar and Now Playing — both reading `usePlayer().track.favorite` —
+   * actually see the change instead of the click silently doing nothing.
+   */
+  setFavorite: (trackId: string, favorite: boolean) => player.setFavorite(trackId, favorite),
 
   setVolume(value: number) {
     useSettings.setState({ volume: value, muted: false });

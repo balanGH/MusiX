@@ -21,10 +21,12 @@ import {
 } from 'lucide-react';
 import {
   cancelJob,
+  DEFAULT_STEMS,
   listJobs,
   probeService,
   STEM_NAMES,
   submitFile,
+  trackDisplayName,
   waitForJob,
   type JobState,
   type ServiceInfo,
@@ -41,9 +43,6 @@ import { Button, Chip, ProgressBar, Spinner, cx } from '@ui/primitives';
 import { PageHeader } from '@ui/PageHeader';
 import { StemMixer } from './StemMixer';
 
-/** Four stems is the default model; six needs `htdemucs_6s` and is slower. */
-const DEFAULT_STEMS: StemName[] = ['vocals', 'drums', 'bass', 'other'];
-
 export function StudioPage() {
   const currentTrack = usePlayer((state) => state.track);
   const toast = useUi((state) => state.toast);
@@ -56,6 +55,21 @@ export function StudioPage() {
   const [busy, setBusy] = useState(false);
   const [recent, setRecent] = useState<Track[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+  // The job the current `separate()` call started — what Cancel must target.
+  // Not `active`, which can still be an earlier, finished job while the new
+  // one uploads; cancelling that deletes its stems.
+  const inFlightJobRef = useRef<string | null>(null);
+  const unmountedRef = useRef(false);
+
+  // Leaving the page stops polling; the job itself keeps running on the service
+  // and shows up under "Earlier separations" next time.
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+      abortRef.current?.abort();
+    };
+  }, []);
 
   // Probe once on mount. No polling: if the service starts later, the user can
   // press "Check again" — polling a service that is usually absent is exactly
@@ -72,19 +86,31 @@ export function StudioPage() {
     void recentlyAdded(12).then(setRecent);
   }, [probe]);
 
+  /**
+   * @param filename Real filename with its extension — the server reads the
+   *   format from it.
+   * @param displayName What to show in the UI.
+   */
   const separate = useCallback(
-    async (blob: Blob, name: string) => {
+    async (blob: Blob, filename: string, displayName: string) => {
       setBusy(true);
       setUploadFraction(0);
+      // Close whatever was open, so nothing below (Cancel included) can act on
+      // the previous job while this one uploads.
+      setActive(null);
+      inFlightJobRef.current = null;
       const controller = new AbortController();
       abortRef.current = controller;
 
       try {
-        const { jobId } = await submitFile(blob, name, {
+        const { jobId, reused } = await submitFile(blob, filename, {
           stems: selectedStems,
+          displayName,
           signal: controller.signal,
           onUploadProgress: setUploadFraction,
         });
+        // A reused job is an earlier, finished one: cancelling it would delete it.
+        if (!reused) inFlightJobRef.current = jobId;
 
         const finished = await waitForJob(
           jobId,
@@ -95,22 +121,35 @@ export function StudioPage() {
         setActive(finished);
         setJobs(await listJobs().catch(() => []));
 
-        toast(
-          finished.status === 'complete'
-            ? `Separated “${name}” into ${finished.stems.length} stems.`
-            : `Separation failed: ${finished.error ?? 'unknown error'}`,
-          { kind: finished.status === 'complete' ? 'success' : 'error' },
-        );
+        if (finished.status === 'complete' && reused) {
+          toast(`“${displayName}” was already separated — reusing those stems.`, {
+            kind: 'success',
+          });
+        } else {
+          toast(
+            finished.status === 'complete'
+              ? `Separated “${displayName}” into ${finished.stems.length} stems.`
+              : `Separation failed: ${finished.error ?? 'unknown error'}`,
+            { kind: finished.status === 'complete' ? 'success' : 'error' },
+          );
+        }
       } catch (error) {
+        if (unmountedRef.current) return;
         if (error instanceof DOMException && error.name === 'AbortError') {
+          // Drop the last polled state, or the progress panel stays up
+          // showing a job that no longer exists.
+          setActive(null);
           toast('Separation cancelled.', { kind: 'info' });
         } else {
           toast(error instanceof Error ? error.message : String(error), { kind: 'error' });
         }
       } finally {
-        abortRef.current = null;
-        setBusy(false);
-        setUploadFraction(0);
+        if (abortRef.current === controller) abortRef.current = null;
+        inFlightJobRef.current = null;
+        if (!unmountedRef.current) {
+          setBusy(false);
+          setUploadFraction(0);
+        }
       }
     },
     [selectedStems, toast],
@@ -125,7 +164,8 @@ export function StudioPage() {
         });
         return;
       }
-      await separate(file, `${track.artist} - ${track.title}`);
+      // `track.filename` keeps the extension; the pretty name is just a label.
+      await separate(file, track.filename, trackDisplayName(track));
     },
     [separate, toast],
   );
@@ -208,7 +248,9 @@ export function StudioPage() {
                     input.accept = 'audio/*';
                     input.addEventListener('change', () => {
                       const file = input.files?.[0];
-                      if (file) void separate(file, file.name.replace(/\.[^.]+$/, ''));
+                      if (file) {
+                        void separate(file, file.name, file.name.replace(/\.[^.]+$/, ''));
+                      }
                     });
                     input.click();
                   }}
@@ -251,14 +293,26 @@ export function StudioPage() {
               )}
             </section>
 
-            {/* Progress */}
-            {(busy || active) && (
+            {/* Progress — hidden once the job is complete, since the mixer's own
+                transport below is the live "playing line" from that point on. */}
+            {(busy || (active && active.status !== 'complete')) && (
               <JobProgress
                 job={active}
                 uploadFraction={uploadFraction}
                 onCancel={() => {
-                  abortRef.current?.abort();
-                  if (active) void cancelJob(active.jobId).catch(() => undefined);
+                  if (busy) {
+                    // Only ever the job this run started, never an earlier one.
+                    const jobId = inFlightJobRef.current;
+                    abortRef.current?.abort();
+                    if (jobId) void cancelJob(jobId).catch(() => undefined);
+                  } else if (active) {
+                    // Nothing running: this is a failed job, and Cancel dismisses it.
+                    void cancelJob(active.jobId)
+                      .then(() => listJobs())
+                      .then(setJobs)
+                      .catch(() => undefined);
+                    setActive(null);
+                  }
                 }}
               />
             )}

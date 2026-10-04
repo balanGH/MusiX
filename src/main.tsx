@@ -12,7 +12,7 @@ import { registerSW } from 'virtual:pwa-register';
 import { App } from '@app/App';
 import { initNative } from '@app/native';
 import { createLogger, describeError } from '@core/logger';
-import { capabilities } from '@core/platform';
+import { isNativeApp } from '@core/platform/native';
 import { toast } from '@state/uiStore';
 import './index.css';
 
@@ -35,34 +35,44 @@ void initNative();
 /**
  * Service worker.
  *
- * Skipped inside the native shell: Capacitor already serves every asset from
- * the APK, so a service worker would add a second cache layer over files that
- * are local by definition — and its update prompt would offer to "reload" an
- * app that cannot be updated that way.
+ * `registerType: 'prompt'` in vite.config.ts means an update never reloads the
+ * page from under the user — which would cut off whatever is playing. Instead
+ * the toast offers the reload and they choose when.
  *
- * On the web, `registerType: 'prompt'` means an update never reloads the page
- * from under the user, which would cut off whatever is playing. The toast
- * offers the reload and they choose when.
+ * Skipped inside the Android app: the shell already serves the bundle from the
+ * APK, and a service worker there would keep serving the *previous* bundle
+ * after an app update.
  */
-const updateServiceWorker: (reload?: boolean) => Promise<void> = capabilities().native
-  ? async () => undefined
-  : registerSW({
-      onNeedRefresh() {
-        toast('A new version of MusiX is ready.', {
-          kind: 'info',
-          durationMs: 0,
-          action: {
-            label: 'Reload',
-            run: () => void updateServiceWorker(true),
-          },
-        });
-      },
-      onOfflineReady() {
-        log.info('app shell cached; MusiX will open without a network');
-      },
-      onRegisterError(error) {
-        // Not fatal: without a service worker the app still runs, it just will
-        // not open while offline.
-        log.warn(`service worker registration failed: ${describeError(error)}`);
-      },
-    });
+function startServiceWorker(): void {
+  const updateServiceWorker = registerSW({
+    onNeedRefresh() {
+      toast('A new version of MusiX is ready.', {
+        kind: 'info',
+        durationMs: 0,
+        action: {
+          label: 'Reload',
+          run: () => void updateServiceWorker(true),
+        },
+      });
+    },
+    onOfflineReady() {
+      log.info('app shell cached; MusiX will open without a network');
+    },
+    onRegisterError(error) {
+      // Not fatal: without a service worker the app still runs, it just will not
+      // open while offline.
+      log.warn(`service worker registration failed: ${describeError(error)}`);
+    },
+  });
+}
+
+if (isNativeApp()) {
+  // An APK installed over a build that *did* register a worker (the user's
+  // earlier hand-made APK) would otherwise keep that stale worker forever.
+  void navigator.serviceWorker
+    ?.getRegistrations()
+    .then((registrations) => Promise.all(registrations.map((reg) => reg.unregister())))
+    .catch(() => undefined);
+} else {
+  startServiceWorker();
+}

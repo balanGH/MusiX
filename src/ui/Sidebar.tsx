@@ -25,6 +25,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
+import { useBackendFeatures } from '@core/net/serverStatus';
 import { formatCount } from '@core/utils';
 import { useLibrary } from '@state/libraryStore';
 import { useSettings } from '@state/settingsStore';
@@ -51,6 +52,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const collapsed = useSettings((state) => state.sidebarCollapsed);
   const toast = useUi((state) => state.toast);
   const navigate = useNavigate();
+  const backend = useBackendFeatures();
 
   const primary: NavItem[] = [
     { to: '/', label: 'Home', icon: <Home className="h-4 w-4" /> },
@@ -92,7 +94,10 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   ];
 
   const tools: NavItem[] = [
-    { to: '/studio', label: 'Audio Studio', icon: <Mic2 className="h-4 w-4" /> },
+    // Needs the backend; hidden in the Android app until a PC server is connected.
+    ...(backend.visible
+      ? [{ to: '/studio', label: 'Audio Studio', icon: <Mic2 className="h-4 w-4" /> }]
+      : []),
     { to: '/equalizer', label: 'Equaliser', icon: <SlidersHorizontal className="h-4 w-4" /> },
     { to: '/health', label: 'Library Health', icon: <Activity className="h-4 w-4" /> },
     { to: '/settings', label: 'Settings', icon: <Settings className="h-4 w-4" /> },
@@ -110,11 +115,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     >
       {/* Wordmark */}
       <div className="flex h-16 items-center gap-2.5 px-4">
-        <span className="flex h-8 w-8 shrink-0 items-end justify-center gap-[3px] rounded-lg bg-accent/15 pb-2">
-          <span className="h-4 w-[3px] rounded-full bg-accent" />
-          <span className="h-2.5 w-[3px] rounded-full bg-accent" />
-          <span className="h-3.5 w-[3px] rounded-full bg-accent" />
-        </span>
+        <img src="/icons/icon-192.png" alt="" className="h-8 w-8 shrink-0" draggable={false} />
         {!collapsed && <span className="text-base font-semibold tracking-tight">MusiX</span>}
       </div>
 

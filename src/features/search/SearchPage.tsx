@@ -9,57 +9,181 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search as SearchIcon, X } from 'lucide-react';
-import { EMPTY_RESULTS, searchLibrary, searchSuggestions, type SearchResults } from '@core/search';
+
+import {
+  EMPTY_RESULTS,
+  searchLibrary,
+  searchSuggestions,
+  type SearchResults,
+} from '@core/search';
+
+import { getCachedArtistPhoto } from '@core/artists/onlinePhoto';
+import { useBackendFeatures } from '@core/net/serverStatus';
 import { formatCount } from '@core/utils';
 import { useLibrary } from '@state/libraryStore';
 import { playerActions } from '@state/playerStore';
 import { Artwork } from '@ui/Artwork';
-import { Button, EmptyState, IconButton, SectionHeader, Spinner, cx } from '@ui/primitives';
+import {
+  Button,
+  EmptyState,
+  IconButton,
+  SectionHeader,
+  Spinner,
+  cx,
+} from '@ui/primitives';
+
 import { PlayActions } from '@ui/PageHeader';
 import { TrackList } from '@ui/TrackList';
+
+import {
+  searchOnline,
+  type OnlineSong,
+} from './onlineDownloader';
+
+import { OnlineResults } from './OnlineResults';
+
 
 export function SearchPage() {
   const revision = useLibrary((state) => state.revision);
   const trackCount = useLibrary((state) => state.counts.tracks);
   const navigate = useNavigate();
+  // Online search runs on the backend; in the Android app without a PC server
+  // it is skipped entirely rather than failing on every query.
+  const onlineAvailable = useBackendFeatures().visible;
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<SearchResults>(EMPTY_RESULTS);
-  const [searching, setSearching] = useState(false);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
+
+  const [results, setResults] =
+    useState<SearchResults>(EMPTY_RESULTS);
+
+  const [searching, setSearching] =
+    useState(false);
+
+  const [suggestions, setSuggestions] =
+    useState<string[]>([]);
+
+  const [onlineResults, setOnlineResults] =
+    useState<OnlineSong[]>([]);
+
+  const [searchingOnline, setSearchingOnline] =
+    useState(false);
+
+  const [artistPhotos, setArtistPhotos] = useState<Map<string, string>>(new Map());
 
   useEffect(() => {
     inputRef.current?.focus();
     void searchSuggestions().then(setSuggestions);
   }, [revision]);
 
+  // Shows a photo already fetched from ArtistPage, if any — never fetches one
+  // itself (spec §4), and a lookup failure here can only ever leave the
+  // placeholder showing, never break the results themselves.
+  useEffect(() => {
+    if (results.artists.length === 0) {
+      setArtistPhotos(new Map());
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(results.artists.map((artist) => getCachedArtistPhoto(artist.id))).then(
+      (found) => {
+        if (cancelled) return;
+        setArtistPhotos(
+          new Map(
+            found
+              .map((artworkId, index) => [results.artists[index]!.id, artworkId] as const)
+              .filter((entry): entry is [string, string] => Boolean(entry[1])),
+          ),
+        );
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [results.artists]);
+
   // Debounce. The cleanup cancels a pending search when the query changes
   // again, so only the final keystroke does work.
+  // Search local library first.
+  // If nothing is found locally, search online.
   useEffect(() => {
     const trimmed = query.trim();
+
     if (!trimmed) {
       setResults(EMPTY_RESULTS);
+      setOnlineResults([]);
       setSearching(false);
+      setSearchingOnline(false);
       return;
     }
 
     setSearching(true);
+    setSearchingOnline(false);
+    setOnlineResults([]);
+
     let cancelled = false;
+
     const timer = setTimeout(() => {
-      void searchLibrary(trimmed).then((found) => {
-        // A slower earlier search must not overwrite a newer result.
-        if (cancelled) return;
-        setResults(found);
-        setSearching(false);
-      });
+      void searchLibrary(trimmed)
+        .then(async (found) => {
+          if (cancelled) return;
+
+          setResults(found);
+          setSearching(false);
+
+          const hasLocalResults =
+            found.tracks.length > 0 ||
+            found.albums.length > 0 ||
+            found.artists.length > 0 ||
+            found.genres.length > 0;
+
+          // Found something locally, or there is nowhere to look online.
+          if (hasLocalResults || !onlineAvailable) {
+            return;
+          }
+
+          // Nothing locally — search online.
+          setSearchingOnline(true);
+
+          try {
+            const online = await searchOnline(trimmed);
+
+            if (!cancelled) {
+              setOnlineResults(online);
+            }
+          } catch (error) {
+            console.error(
+              'Online search failed:',
+              error,
+            );
+
+            if (!cancelled) {
+              setOnlineResults([]);
+            }
+          } finally {
+            if (!cancelled) {
+              setSearchingOnline(false);
+            }
+          }
+        })
+        .catch((error) => {
+          if (cancelled) return;
+
+          console.error(
+            'Local search failed:',
+            error,
+          );
+
+          setResults(EMPTY_RESULTS);
+          setSearching(false);
+        });
     }, 120);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [query, revision]);
+  }, [query, revision, onlineAvailable]);
 
   const trackIds = useMemo(() => results.tracks.map((track) => track.id), [results.tracks]);
 
@@ -106,6 +230,35 @@ export function SearchPage() {
           </IconButton>
         )}
       </div>
+      {hasQuery &&
+        results.tracks.length === 0 &&
+        results.albums.length === 0 &&
+        results.artists.length === 0 &&
+        results.genres.length === 0 && (
+
+          <>
+
+            {searchingOnline && (
+
+              <div className="mt-6 text-sm text-subtle">
+                Searching online…
+              </div>
+
+            )}
+
+            {!searchingOnline &&
+              onlineResults.length > 0 && (
+
+                <OnlineResults
+                  results={onlineResults}
+                />
+
+              )}
+
+          </>
+
+        )}
+
 
       {/* Suggestions before anything is typed */}
       {!hasQuery && suggestions.length > 0 && (
@@ -137,8 +290,11 @@ export function SearchPage() {
                 onClick={() => navigate(`/artists/${artist.id}`)}
                 className="flex w-24 shrink-0 flex-col items-center gap-1.5 text-center"
               >
+                {/* Not `artist.artworkId` — see ArtistCard in ArtistsPage.tsx.
+                    `artistPhotos` holds any real photo already fetched from
+                    ArtistPage. */}
                 <Artwork
-                  artworkId={artist.artworkId}
+                  artworkId={artistPhotos.get(artist.id) ?? null}
                   name={artist.name}
                   size={80}
                   rounded="full"
@@ -199,32 +355,46 @@ export function SearchPage() {
     </div>
   );
 
-  if (hasQuery && searching && !hasResults) {
-    return (
-      <div className="flex flex-1 flex-col">
-        {header}
-        <div className="flex flex-1 items-center justify-center">
-          <Spinner size={20} />
-        </div>
-      </div>
-    );
-  }
-
   return (
     <TrackList
       ids={trackIds}
       ariaLabel="Search results"
       header={header}
+      // A separate early `return` here (spinner vs. results) would swap the whole
+      // tree — including `header`, which holds the focused input — forcing React
+      // to remount it and drop focus mid-keystroke. Folding the spinner into
+      // `emptyState` keeps `header` mounted in the same place throughout.
       emptyState={
-        hasQuery ? (
+        hasQuery && searching && !hasResults ? (
+          <div className="flex flex-1 items-center justify-center py-16">
+            <Spinner size={20} />
+          </div>
+        ) : hasQuery ? (
+
           <EmptyState
-            icon={<SearchIcon className="h-8 w-8" />}
-            title={`Nothing matches “${query.trim()}”`}
-            body="Try fewer words, or check the spelling — search also tolerates a single typo in longer words."
+            icon={
+              <SearchIcon className="h-8 w-8" />
+            }
+            title={
+              searchingOnline
+                ? 'Searching online…'
+                : onlineResults.length > 0
+                  ? 'Not found in your library'
+                  : `Nothing matches “${query.trim()}”`
+            }
+            body={
+              searchingOnline
+                ? 'Looking for this song online.'
+                : onlineResults.length > 0
+                  ? 'Choose a result above to download it.'
+                  : 'Try fewer words, or check the spelling.'
+            }
           />
-        ) : (
-          <div className="h-2" />
+
         )
+          : (
+            <div className="h-2" />
+          )
       }
     />
   );

@@ -18,13 +18,22 @@ What changed from the previous version, and why:
     declared and ignored while the whole file was read into memory.
   * CORS is restricted to the local app. `allow_origins=["*"]` together with
     `allow_credentials=True` is rejected by browsers anyway.
+  * CORS only decides who may *read* a response, so mutating routes also check
+    `Origin` and `Content-Type`, and unknown `Host` headers are refused — see
+    `LocalRequestGuard`.
   * Stem downloads are served by name from a fixed set, so a crafted job id or
     stem name cannot escape the storage directory.
+  * An optional shared secret (`MUSIX_API_TOKEN`) guards every route but
+    /api/health, so the phone app can use the service over Wi-Fi
+    (`MUSIX_LAN=1`) without the rest of the network being able to — see
+    `ApiTokenGuard`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import time
 import uuid
@@ -33,20 +42,189 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+from starlette.datastructures import Headers, QueryParams
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 import audio_processor
 import config
+import downloader
+
+# Before anything else: LAN mode without a token must never start serving.
+config.check_lan_mode()
 
 app = FastAPI(title="MusiX Audio Studio", version="1.0.0")
 
+MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+UPLOAD_ROUTE = "/api/jobs"
+# Room for the multipart framing and the small form fields around the file,
+# so the body cap below never rejects a file the handler itself would accept.
+MULTIPART_OVERHEAD_BYTES = 1024 * 1024
+
+
+def _upload_too_large() -> str:
+    return f"That file is larger than the {config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit."
+
+
+class LocalRequestGuard:
+    """Refuses cross-site writes, and caps the upload body before it is parsed.
+
+    CORS alone does not protect a local service: a page on any site can send a
+    `no-cors` POST whose body FastAPI happily parses — it just cannot read the
+    reply. So for every mutating request:
+
+      * a present `Origin` must be one of `ALLOWED_ORIGINS` (browsers always
+        send it on POST/DELETE; tools like curl send none and are allowed);
+      * JSON routes require `Content-Type: application/json`, which a
+        cross-site page cannot send without a CORS preflight, and the upload
+        route requires `multipart/form-data`.
+
+    The upload cap lives here rather than in the handler because `UploadFile`
+    has already spooled the whole body to disk by the time the handler runs.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["method"] not in MUTATING_METHODS:
+            await self.app(scope, receive, send)
+            return
+
+        headers = Headers(scope=scope)
+        origin = headers.get("origin")
+        if origin is not None and origin not in config.ALLOWED_ORIGINS:
+            await _reject(403, "Origin not allowed.", scope, receive, send)
+            return
+
+        is_upload = scope["path"] == UPLOAD_ROUTE and scope["method"] == "POST"
+
+        if scope["method"] == "POST":
+            content_type = headers.get("content-type", "").split(";")[0].strip().lower()
+            expected = "multipart/form-data" if is_upload else "application/json"
+            if content_type != expected:
+                await _reject(415, f"Expected a {expected} request body.", scope, receive, send)
+                return
+
+        if not is_upload:
+            await self.app(scope, receive, send)
+            return
+
+        limit = config.MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD_BYTES
+        declared = headers.get("content-length")
+        if declared is not None:
+            try:
+                too_large = int(declared) > limit
+            except ValueError:
+                await _reject(400, "Invalid Content-Length.", scope, receive, send)
+                return
+            if too_large:
+                await _reject(413, _upload_too_large(), scope, receive, send)
+                return
+
+        # A chunked upload declares no length, so count as it streams too.
+        received = 0
+
+        async def capped_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    # FastAPI re-raises HTTPExceptions from body parsing, so
+                    # this reaches the client as a 413 rather than a 400.
+                    raise HTTPException(413, _upload_too_large())
+            return message
+
+        await self.app(scope, capped_receive, send)
+
+
+async def _reject(status: int, detail: str, scope: Scope, receive: Receive, send: Send) -> None:
+    await JSONResponse({"detail": detail}, status_code=status)(scope, receive, send)
+
+
+HEALTH_ROUTE = "/api/health"
+
+
+def supplied_token(scope: Scope) -> str | None:
+    """The token a request carries, from `Authorization: Bearer` or `?token=`.
+
+    The query form exists for what cannot send headers: an <audio> element's
+    src and a plain download link.
+    """
+    authorization = Headers(scope=scope).get("authorization", "")
+    scheme, _, value = authorization.partition(" ")
+    if scheme.lower() == "bearer" and value.strip():
+        return value.strip()
+    query = QueryParams(scope.get("query_string", b"").decode("latin-1")).get("token")
+    return query or None
+
+
+def token_matches(token: str | None) -> bool:
+    """Constant-time comparison, so response timing cannot leak the token."""
+    if token is None:
+        return False
+    return hmac.compare_digest(token.encode("utf-8"), config.API_TOKEN.encode("utf-8"))
+
+
+class ApiTokenGuard:
+    """Requires `MUSIX_API_TOKEN` on every /api route when one is configured.
+
+    /api/health stays open so the app can tell "unreachable" from "needs a
+    password", but a *wrong* token sent to it is still refused — that is how
+    the app's "Test connection" reports a mistyped password. Preflights pass
+    untouched: browsers never attach credentials to them, and CORSMiddleware
+    (outside this guard) answers them anyway.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] != "http"
+            or not config.API_TOKEN
+            or scope["method"] == "OPTIONS"
+            or not scope["path"].startswith("/api")
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        token = supplied_token(scope)
+        if scope["path"] == HEALTH_ROUTE and token is None:
+            await self.app(scope, receive, send)
+            return
+
+        if not token_matches(token):
+            detail = (
+                "Wrong password for this MusiX server."
+                if token is not None
+                else "This MusiX server needs a password. Enter it in Settings > PC server."
+            )
+            await JSONResponse(
+                {"detail": detail},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
+
+
+# The last one added runs first: host check, then CORS, then the guards — so an
+# allowed origin can still read the guards' error responses (a 401 included).
+app.add_middleware(ApiTokenGuard)
+app.add_middleware(LocalRequestGuard)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=config.ALLOWED_HOSTS)
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +248,9 @@ class Job:
     sourceName: str  # noqa: N815
     stems: list[StemInfo] = field(default_factory=list)
     error: str | None = None
+    # sha256 of the uploaded audio, used to skip re-separating a file that was
+    # already processed. None for jobs persisted before this field existed.
+    sourceHash: str | None = None  # noqa: N815
     createdAt: float = field(default_factory=lambda: time.time() * 1000)  # noqa: N815
     updatedAt: float = field(default_factory=lambda: time.time() * 1000)  # noqa: N815
 
@@ -86,12 +267,18 @@ class Job:
 JOBS: dict[str, Job] = {}
 CANCELS: dict[str, asyncio.Event] = {}
 
+# Demucs needs several GB of RAM per run: one at a time, the rest queue.
+DEMUCS_SLOT = asyncio.Semaphore(1)
+
 
 def save_state() -> None:
-    """Persist jobs so a restart does not lose completed work."""
+    """Persist jobs so a restart does not lose completed work.
+
+    Written atomically, so a crash mid-write cannot wipe every job.
+    """
     try:
         payload = [asdict(job) for job in JOBS.values()]
-        config.STATE_FILE.write_text(json.dumps(payload), encoding="utf-8")
+        config.write_atomically(config.STATE_FILE, json.dumps(payload))
     except OSError:
         # Losing the index is survivable; failing a request over it is not.
         pass
@@ -124,6 +311,25 @@ def load_state() -> None:
         JOBS[job.jobId] = job
 
 
+def find_reusable_job(source_hash: str, needed_stems: list[str]) -> Job | None:
+    """A completed job for the same audio that already has the needed stems.
+
+    Keyed on content hash rather than filename or track id, so the same song
+    reuploaded under a different name — or re-run from the library after being
+    renamed — still hits the cache instead of re-running Demucs.
+    """
+    needed = set(needed_stems)
+    for job in JOBS.values():
+        if job.status != "complete" or job.sourceHash != source_hash:
+            continue
+        available = {stem.name for stem in job.stems}
+        if not needed.issubset(available):
+            continue
+        if all((config.OUTPUT_DIR / job.jobId / f"{name}.mp3").is_file() for name in needed):
+            return job
+    return None
+
+
 def prune_jobs() -> None:
     """Keep the job list bounded, deleting the oldest jobs' files with them."""
     if len(JOBS) <= config.MAX_JOBS_KEPT:
@@ -144,17 +350,172 @@ load_state()
 
 @app.get("/api/health")
 async def health() -> dict[str, object]:
-    """What the Studio page probes on open."""
-    device = config.torch_device()
+    """What the Studio page probes on open, and the app's "Test connection".
+
+    Open without a token (see `ApiTokenGuard`); `auth` tells the app whether
+    the other routes will want one.
+    """
+    # Both import torch, which takes seconds; keep that off the event loop.
+    device = await asyncio.to_thread(config.torch_device)
+    model_ready = await asyncio.to_thread(audio_processor.model_is_downloaded, config.MODEL_NAME)
     return {
         "status": "ok",
+        "version": app.version,
+        "auth": "required" if config.API_TOKEN else "none",
         "model": config.MODEL_NAME,
         "device": device,
-        "modelReady": audio_processor.model_is_downloaded(config.MODEL_NAME),
+        "modelReady": model_ready,
         "maxUploadBytes": config.MAX_UPLOAD_BYTES,
         "availableStems": config.SIX_STEMS,
         "ffmpeg": config.ffmpeg_available(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Online music search / download
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/online/search")
+async def online_search(q: str = "") -> list[dict]:
+    """
+    Search YouTube Music through yt-dlp.
+    """
+
+    query = q.strip()
+
+    if not query:
+        return []
+
+    try:
+
+        return await asyncio.to_thread(
+            downloader.search_online,
+            query,
+            5,
+        )
+
+    except Exception as error:
+
+        raise HTTPException(
+            500,
+            f"Online search failed: {error}",
+        ) from error
+
+
+@app.get("/api/online/download-path")
+async def get_download_path() -> dict[str, object]:
+    """Where downloads are written, and whether the user may change it."""
+    current = config.download_dir()
+    return {
+        "path": str(current),
+        "default": str(config.DEFAULT_DOWNLOAD_DIR),
+        "isDefault": current == config.DEFAULT_DOWNLOAD_DIR,
+        # Pinned by MUSIX_DOWNLOAD_DIR; the UI hides the control when set.
+        "fixed": config.download_dir_is_fixed(),
+    }
+
+
+class DownloadPathRequest(BaseModel):
+    """An absolute folder path on this machine.
+
+    A model rather than a bare dict so an empty or malformed body is rejected
+    with a clear 422 instead of reaching the filesystem code.
+    """
+
+    path: str
+
+
+@app.post("/api/online/download-path")
+async def set_download_path(request: DownloadPathRequest) -> dict[str, object]:
+    """Choose a different download folder.
+
+    The folder is created and write-tested before being accepted, so a bad
+    choice fails here with a reason rather than silently breaking every
+    later download.
+    """
+    try:
+        chosen = config.set_download_dir(request.path)
+    except config.DownloadDirError as error:
+        raise HTTPException(400, str(error)) from error
+
+    return {"path": str(chosen), "isDefault": chosen == config.DEFAULT_DOWNLOAD_DIR}
+
+
+@app.post("/api/online/download")
+async def online_download(payload: dict) -> dict[str, str]:
+
+    url = payload.get("url")
+
+    if not url or not isinstance(url, str):
+        raise HTTPException(
+            400,
+            "Missing URL.",
+        )
+
+    # Only YouTube video links (or a bare video id) reach yt-dlp. Anything else
+    # would let its generic extractor fetch arbitrary URLs, including ones on
+    # the user's own network.
+    video_id = downloader.video_id_from(url)
+    if video_id is None:
+        raise HTTPException(400, "Only YouTube or YouTube Music video links can be downloaded.")
+
+    # Lyrics are looked up from an online service, so the client's privacy
+    # setting decides (spec §32). Defaults to on: the user is already
+    # downloading from the internet at this point.
+    want_lyrics = payload.get("lyrics", True) is not False
+
+    job_id = downloader.start_download(video_id, want_lyrics)
+
+    return {
+        "jobId": job_id,
+    }
+
+
+@app.get("/api/online/download/{job_id}")
+async def online_download_status(
+    job_id: str,
+) -> dict:
+
+    job = downloader.get_job(job_id)
+
+    if job is None:
+
+        raise HTTPException(
+            404,
+            "Download job not found.",
+        )
+
+    return job
+
+
+@app.get("/api/online/download/{job_id}/file")
+async def online_download_file(job_id: str) -> FileResponse:
+    """Serve the finished MP3 so the client can add it to the library.
+
+    The path comes only from the job's own record, never from `job_id`
+    directly, so a crafted job id cannot escape the downloads directory.
+    """
+    job = downloader.get_job(job_id)
+
+    if job is None:
+        raise HTTPException(404, "Download job not found.")
+
+    if job.get("status") != "complete" or not job.get("filename"):
+        raise HTTPException(409, "That download has not finished yet.")
+
+    path = Path(job["filename"])
+    if not path.is_file():
+        raise HTTPException(410, "That download's file has been removed from disk.")
+
+    # The on-disk name, already made filename-safe by `safe_filename`. A name
+    # built from the raw tags keeps a `/` ("AC/DC"), which the client cannot
+    # use as a file name.
+    return FileResponse(
+        path,
+        media_type="audio/mpeg",
+        filename=path.name,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +540,8 @@ async def get_job(job_id: str) -> dict:
 async def create_job(
     file: UploadFile = File(...),
     stems: str = Form("vocals,drums,bass,other"),
-) -> dict[str, str]:
+    name: str = Form(""),
+) -> dict[str, object]:
     """Accept an upload and start separating it."""
     if not config.ffmpeg_available():
         raise HTTPException(
@@ -189,10 +551,18 @@ async def create_job(
     filename = Path(file.filename or "audio")
     extension = filename.suffix.lower()
     if extension not in config.ALLOWED_EXTENSIONS:
+        # Quote what actually arrived. A missing extension and an unsupported
+        # one need completely different fixes, and the old wording ("this file
+        # type") hid which of the two had happened.
+        received = f"“{file.filename}”" if file.filename else "an unnamed upload"
+        problem = (
+            f"{received} has no file extension, so the format cannot be determined"
+            if not extension
+            else f"“{extension}” is not supported"
+        )
         raise HTTPException(
             400,
-            f"“{extension or 'this file type'}” is not supported. "
-            f"Use one of: {', '.join(sorted(config.ALLOWED_EXTENSIONS))}.",
+            f"{problem}. Use one of: {', '.join(sorted(config.ALLOWED_EXTENSIONS))}.",
         )
 
     job_id = uuid.uuid4().hex
@@ -200,7 +570,10 @@ async def create_job(
 
     # Stream to disk with the limit enforced as we go, so an oversized upload is
     # rejected before it has been fully received — never buffered in memory.
+    # Hashed on the way past so a repeat upload of the same audio can be
+    # recognised without a second read of the file.
     written = 0
+    hasher = hashlib.sha256()
     try:
         with upload_path.open("wb") as sink:
             while chunk := await file.read(config.UPLOAD_CHUNK_BYTES):
@@ -213,6 +586,7 @@ async def create_job(
                         f"That file is larger than the "
                         f"{config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.",
                     )
+                hasher.update(chunk)
                 sink.write(chunk)
     except HTTPException:
         raise
@@ -224,13 +598,27 @@ async def create_job(
         upload_path.unlink(missing_ok=True)
         raise HTTPException(400, "The uploaded file was empty.")
 
+    source_hash = hasher.hexdigest()
     requested = [stem.strip() for stem in stems.split(",") if stem.strip()]
+    needed_stems = config.kept_stems(requested)
+
+    reusable = find_reusable_job(source_hash, needed_stems)
+    if reusable is not None:
+        # Same audio, already separated (possibly under a different name or
+        # for a different stem selection covered by the same model) — the
+        # stems are still on disk, so there is nothing to run again.
+        upload_path.unlink(missing_ok=True)
+        return {"jobId": reusable.jobId, "reused": True}
+
     job = Job(
         jobId=job_id,
         status="queued",
         progress=0,
         stage="Queued",
-        sourceName=filename.stem,
+        # The client's label if it sent one, otherwise the filename without its
+        # extension. Used for the UI and for naming downloaded stems.
+        sourceName=name.strip() or filename.stem,
+        sourceHash=source_hash,
     )
     JOBS[job_id] = job
     CANCELS[job_id] = asyncio.Event()
@@ -242,7 +630,7 @@ async def create_job(
     # after the response is sent but blocks the worker while it does.
     asyncio.create_task(run_job(job_id, upload_path, requested))
 
-    return {"jobId": job_id}
+    return {"jobId": job_id, "reused": False}
 
 
 @app.delete("/api/jobs/{job_id}")
@@ -282,14 +670,14 @@ async def download_stem(job_id: str, stem: str) -> FileResponse:
         available = ", ".join(info.name for info in job.stems) or "none"
         raise HTTPException(404, f"No “{stem}” stem in this job. Available: {available}.")
 
-    path = config.OUTPUT_DIR / job_id / f"{stem}.wav"
+    path = config.OUTPUT_DIR / job_id / f"{stem}.mp3"
     if not path.is_file():
         raise HTTPException(410, "That stem file has been removed from disk.")
 
     return FileResponse(
         path,
-        media_type="audio/wav",
-        filename=f"{job.sourceName} - {stem}.wav",
+        media_type="audio/mpeg",
+        filename=f"{job.sourceName} - {stem}.mp3",
         # Lets the browser seek within the stem while the mixer plays it.
         headers={"Accept-Ranges": "bytes"},
     )
@@ -298,6 +686,17 @@ async def download_stem(job_id: str, stem: str) -> FileResponse:
 # ---------------------------------------------------------------------------
 # Worker
 # ---------------------------------------------------------------------------
+
+
+async def _acquire_demucs_slot(cancel_event: asyncio.Event) -> None:
+    """Wait for the Demucs slot, giving up early if the job is cancelled meanwhile."""
+    while True:
+        try:
+            await asyncio.wait_for(DEMUCS_SLOT.acquire(), timeout=0.5)
+            return
+        except TimeoutError:
+            if cancel_event.is_set():
+                raise audio_processor.ProcessingError("Cancelled.") from None
 
 
 async def run_job(job_id: str, upload_path: Path, requested_stems: list[str]) -> None:
@@ -318,10 +717,16 @@ async def run_job(job_id: str, upload_path: Path, requested_stems: list[str]) ->
         if cancel_event.is_set():
             raise audio_processor.ProcessingError("Cancelled.")
 
-        job.touch(status="separating", progress=10, stage="Separating stems")
-        result = await audio_processor.separate(
-            wav_path, job_id, requested_stems, report, cancel_event
-        )
+        if DEMUCS_SLOT.locked():
+            job.touch(status="queued", stage="Waiting for another separation to finish")
+        await _acquire_demucs_slot(cancel_event)
+        try:
+            job.touch(status="separating", progress=10, stage="Separating stems")
+            result = await audio_processor.separate(
+                wav_path, job_id, requested_stems, report, cancel_event
+            )
+        finally:
+            DEMUCS_SLOT.release()
 
         job.stems = [
             StemInfo(
@@ -358,6 +763,17 @@ if __name__ == "__main__":
     import uvicorn
 
     print(f"MusiX audio studio on http://{config.HOST}:{config.PORT}")
+    if config.HOST in {"0.0.0.0", "::"}:
+        addresses = config.lan_addresses()
+        if addresses:
+            print("  on your network (enter one in the app under Settings > PC server):")
+            for address in addresses:
+                print(f"    http://{address}:{config.PORT}")
+        else:
+            print("  on your network: no LAN address found — run `ipconfig` to find it")
+    print(f"  auth:   {'password required (MUSIX_API_TOKEN)' if config.API_TOKEN else 'none'}")
+    if not config.API_TOKEN and config.HOST not in {"127.0.0.1", "localhost", "::1"}:
+        print("  WARNING: listening beyond this machine with no MUSIX_API_TOKEN set")
     print(f"  model:  {config.MODEL_NAME} ({config.torch_device()})")
     print(f"  ffmpeg: {'found' if config.ffmpeg_available() else 'MISSING — install it'}")
     print(f"  demucs: {'found' if audio_processor.probe_demucs() else 'MISSING — pip install -r requirements.txt'}")

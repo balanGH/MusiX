@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { recentAlbums } from '@core/db/repositories/library';
 import { favorites, mostPlayed, recentlyAdded, recentlyPlayed } from '@core/db/repositories/tracks';
+import { useBackendFeatures } from '@core/net/serverStatus';
 import { formatCount, formatDurationLong, formatRelative } from '@core/utils';
 import { useLibrary } from '@state/libraryStore';
 import { playerActions, usePlayer } from '@state/playerStore';
@@ -51,6 +52,7 @@ export function HomePage() {
   const currentTrack = usePlayer((state) => state.track);
   const toast = useUi((state) => state.toast);
   const navigate = useNavigate();
+  const backend = useBackendFeatures();
 
   const [data, setData] = useState<HomeData | null>(null);
 
@@ -123,10 +125,12 @@ export function HomePage() {
           <Activity className="h-4 w-4" />
           Library health
         </Button>
-        <Button variant="secondary" onClick={() => navigate('/studio')}>
-          <Mic2 className="h-4 w-4" />
-          Audio Studio
-        </Button>
+        {backend.visible && (
+          <Button variant="secondary" onClick={() => navigate('/studio')}>
+            <Mic2 className="h-4 w-4" />
+            Audio Studio
+          </Button>
+        )}
       </div>
 
       {!data ? (

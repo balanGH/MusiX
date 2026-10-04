@@ -253,7 +253,10 @@ function BandSlider({
       </span>
       {/*
         A vertical range input. `writing-mode` is the modern way to do this and
-        avoids the rotation transform, which breaks pointer coordinates.
+        avoids the rotation transform, which breaks pointer coordinates. The
+        track/thumb fill still needs `mx-range-vertical` (tokens.css) — those
+        pseudo-elements use physical width/height and a left-to-right
+        gradient that writing-mode does not rotate on its own.
       */}
       <input
         type="range"
@@ -263,7 +266,7 @@ function BandSlider({
         step={0.5}
         value={gainDb}
         onChange={(event) => onChange(Number.parseFloat(event.target.value))}
-        className="mx-range h-36 w-6"
+        className="mx-range mx-range-vertical h-36 w-6"
         style={{
           ['writingMode' as string]: 'vertical-lr',
           ['direction' as string]: 'rtl',

@@ -105,9 +105,21 @@ export async function trackIdsSorted(
 
   const index = SORT_INDEX[sort];
   const tx = db.transaction(Stores.tracks, 'readonly');
-  const keys = (await request(
-    tx.objectStore(Stores.tracks).index(index).getAllKeys(),
-  )) as string[];
+  const objectStore = tx.objectStore(Stores.tracks);
+  if (sort === 'lastPlayedAt') {
+    // Sparse index: never-played tracks (null `lastPlayedAt`) are absent from
+    // it, so they are appended from the primary store — last in either
+    // direction, since "never" is not an extreme of recency.
+    const [indexed, all] = (await Promise.all([
+      request(objectStore.index(index).getAllKeys()),
+      request(objectStore.getAllKeys()),
+    ])) as [string[], string[]];
+    const ordered = direction === 'asc' ? indexed : indexed.reverse();
+    const seen = new Set(ordered);
+    for (const id of all) if (!seen.has(id)) ordered.push(id);
+    return ordered;
+  }
+  const keys = (await request(objectStore.index(index).getAllKeys())) as string[];
   return direction === 'asc' ? keys : keys.reverse();
 }
 
@@ -296,6 +308,16 @@ export async function recordPlay(
     };
     tx.objectStore(Stores.history).put(entry);
   });
+}
+
+/**
+ * Record that a track now has lyrics stored against it.
+ *
+ * Kept separate from the lyrics store itself so the flag a list row reads is a
+ * field on the track, not a second lookup per row.
+ */
+export async function setHasLyrics(trackId: string, hasLyrics: boolean): Promise<Track | undefined> {
+  return patchTrack(trackId, (track) => ({ ...track, hasLyrics }));
 }
 
 /** A skip is worth knowing about but is not a play. */

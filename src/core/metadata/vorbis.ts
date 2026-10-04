@@ -37,6 +37,7 @@ const VORBIS_KEYS: Record<string, string> = {
   bpm: 'bpm',
   isrc: 'isrc',
   copyright: 'copyright',
+  compilation: 'compilation',
   lyrics: 'lyrics',
   unsyncedlyrics: 'lyrics',
   musicbrainz_trackid: 'musicbrainz_trackid',

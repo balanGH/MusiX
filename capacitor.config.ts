@@ -13,14 +13,18 @@ const config: CapacitorConfig = {
   appName: 'MusiX',
   webDir: 'dist',
 
+  backgroundColor: '#05051a',
+
   android: {
     // Release builds are minified anyway; this keeps the debug APK debuggable
     // from Chrome DevTools (chrome://inspect).
     webContentsDebuggingEnabled: true,
-    // The app never loads remote content, so cleartext stays off. If you want
-    // the APK to reach the audio-studio service on your desktop over the LAN,
-    // see docs/ANDROID.md — it is off by default on purpose.
-    allowMixedContent: false,
+    // Settings > PC server talks to the MusiX backend on the user's computer
+    // at a plain http://<LAN IP>:8000 address. From this https origin that is
+    // mixed content, which the WebView blocks unless allowed here. The backend
+    // requires a password in LAN mode (docs/ANDROID.md).
+    allowMixedContent: true,
+    backgroundColor: '#05051a',
   },
 
   server: {
@@ -33,6 +37,9 @@ const config: CapacitorConfig = {
      * store imported audio at all.
      */
     androidScheme: 'https',
+    // Android 9+ refuses cleartext HTTP to LAN addresses without this; needed
+    // for the PC server connection above.
+    cleartext: true,
   },
 };
 

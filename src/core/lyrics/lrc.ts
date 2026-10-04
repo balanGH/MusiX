@@ -15,7 +15,7 @@ import type { Lyrics, LyricsLine } from '../types';
 /** `[mm:ss.xx]`, `[mm:ss:xx]` or `[mm:ss]`, one or more per line. */
 const TIMESTAMP = /\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
 /** `[ar: Artist]`-style metadata lines. */
-const METADATA = /^\[(ar|ti|al|au|by|offset|length|re|ve|tool):\s*(.*)\]$/i;
+const METADATA = /^\[(ar|ti|al|au|by|la|offset|length|re|ve|tool):\s*(.*)\]$/i;
 
 export function looksLikeLrc(text: string): boolean {
   // Two timestamps is the threshold: a single one could be a literal bracket in

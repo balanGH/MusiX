@@ -10,10 +10,11 @@
  * components instead of the whole bar.
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   Heart,
   ListMusic,
+  ListPlus,
   Maximize2,
   Pause,
   Play,
@@ -26,7 +27,6 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import { setFavorite } from '@core/db/repositories/tracks';
 import { formatDuration } from '@core/utils';
 import { playerActions, usePlayer, usePlayerPosition } from '@state/playerStore';
 import { useSettings } from '@state/settingsStore';
@@ -48,8 +48,9 @@ export function PlayerBar() {
 
   return (
     <div
-      className="relative z-30 flex shrink-0 items-center gap-3 border-t border-line bg-bg-elevated px-3 sm:px-4"
-      style={{ height: 'var(--mx-player-height)' }}
+      // `mx-player-bar` (tokens.css) sets the height and, from `md` up where
+      // there is no tab bar below it, the home-indicator inset.
+      className="mx-player-bar relative z-30 flex shrink-0 items-center gap-3 border-t border-line bg-bg-elevated px-3 sm:px-4"
     >
       {/* ---- Now playing ---- */}
       <div className="flex min-w-0 flex-1 items-center gap-3 sm:w-[30%] sm:flex-none">
@@ -77,6 +78,7 @@ export function PlayerBar() {
               <div className="truncate text-xs text-muted">{track.artist}</div>
             </div>
             <FavoriteButton trackId={track.id} favorite={track.favorite} />
+            <SaveToPlaylistButton trackId={track.id} />
           </>
         ) : (
           <div className="flex items-center gap-3">
@@ -229,25 +231,36 @@ function VolumeControl() {
 /**
  * Favourite toggle for the currently playing track.
  *
- * Holds its own optimistic copy so the heart fills instantly; the controller's
- * next state push corrects it if the write failed.
+ * `favorite` is read straight from the store rather than mirrored into local
+ * state: `playerActions.setFavorite` writes through the player controller,
+ * which patches its cached track and re-emits when it's the one currently
+ * loaded, so this genuinely updates rather than needing an optimistic guess
+ * that a later state push might silently fail to correct.
  */
 function FavoriteButton({ trackId, favorite }: { trackId: string; favorite: boolean }) {
-  const [optimistic, setOptimistic] = useState(favorite);
-  useEffect(() => setOptimistic(favorite), [favorite, trackId]);
-
   return (
     <IconButton
-      label={optimistic ? 'Remove from favourites' : 'Add to favourites'}
+      label={favorite ? 'Remove from favourites' : 'Add to favourites'}
       size={32}
-      className={cx('hidden shrink-0 sm:inline-flex', optimistic && 'text-accent')}
-      onClick={() => {
-        const next = !optimistic;
-        setOptimistic(next);
-        void setFavorite(trackId, next).catch(() => setOptimistic(!next));
-      }}
+      className={cx('hidden shrink-0 sm:inline-flex', favorite && 'text-accent')}
+      onClick={() => void playerActions.setFavorite(trackId, !favorite)}
     >
-      <Heart className={cx('h-4 w-4', optimistic && 'fill-current')} />
+      <Heart className={cx('h-4 w-4', favorite && 'fill-current')} />
+    </IconButton>
+  );
+}
+
+/** Opens the playlist checklist for the current track: add, remove, or both. */
+function SaveToPlaylistButton({ trackId }: { trackId: string }) {
+  const openAddToPlaylist = useUi((state) => state.openAddToPlaylist);
+  return (
+    <IconButton
+      label="Save to playlist"
+      size={32}
+      className="hidden shrink-0 sm:inline-flex"
+      onClick={() => openAddToPlaylist([trackId])}
+    >
+      <ListPlus className="h-4 w-4" />
     </IconButton>
   );
 }

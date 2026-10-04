@@ -7,30 +7,54 @@
  */
 
 import { createLogger } from '../logger';
+import { isNativeApp } from '../platform/native';
 import { openDatabase, request } from './idb';
-import { DB_NAME, DB_VERSION, MIGRATIONS } from './schema';
+import { DB_NAME, DB_VERSION, MIGRATIONS, Stores } from './schema';
 
 const log = createLogger('db');
 
 let connection: Promise<IDBDatabase> | null = null;
 
-export function getDb(): Promise<IDBDatabase> {
-  if (!connection) {
-    connection = openDatabase({
-      name: DB_NAME,
-      version: DB_VERSION,
-      migrations: MIGRATIONS,
-      onVersionChange: () => {
-        // Drop the memo so the next caller opens a fresh connection against the
-        // upgraded schema instead of using a closed handle.
-        connection = null;
-      },
-    }).catch((error) => {
+function openConnection(): Promise<IDBDatabase> {
+  return openDatabase({
+    name: DB_NAME,
+    version: DB_VERSION,
+    migrations: MIGRATIONS,
+    onVersionChange: () => {
+      // Drop the memo so the next caller opens a fresh connection against the
+      // upgraded schema instead of using a closed handle.
       connection = null;
-      throw error;
-    });
+    },
+  }).catch((error) => {
+    connection = null;
+    throw error;
+  });
+}
+
+/**
+ * A page loaded before a schema change shipped can be left holding a
+ * connection whose `objectStoreNames` predates a store this code now expects
+ * — a long-lived tab across a deploy, or a dev server hot-reloading modules
+ * without a full page reload. Every subsequent call would otherwise fail with
+ * IndexedDB's "object store not found" forever, for no reason a reload
+ * wouldn't already fix — so `getDb()` checks for exactly that and reopens
+ * once on its own rather than requiring the user to notice and refresh.
+ */
+function isMissingAStore(db: IDBDatabase): boolean {
+  return Object.values(Stores).some((name) => !db.objectStoreNames.contains(name));
+}
+
+export async function getDb(): Promise<IDBDatabase> {
+  if (!connection) connection = openConnection();
+
+  const db = await connection;
+  if (isMissingAStore(db)) {
+    log.warn('connection predates a store this schema expects; reopening');
+    db.close();
+    connection = openConnection();
+    return connection;
   }
-  return connection;
+  return db;
 }
 
 export async function closeDb(): Promise<void> {
@@ -69,6 +93,9 @@ export async function deleteDatabase(): Promise<void> {
  * silently for installed PWAs and frequently-visited origins.
  */
 export async function requestPersistentStorage(): Promise<boolean> {
+  // Inside the Android app the WebView's storage belongs to the app and is
+  // only cleared with it, so there is nothing to ask for.
+  if (isNativeApp()) return false;
   if (!navigator.storage?.persist) return false;
   try {
     if (await navigator.storage.persisted()) return true;
@@ -88,7 +115,9 @@ export interface StorageReport {
 
 export async function storageReport(): Promise<StorageReport> {
   const estimate = (await navigator.storage?.estimate?.()) ?? {};
-  const persisted = (await navigator.storage?.persisted?.().catch(() => false)) ?? false;
+  // App storage is never evicted by the browser, so the warning is moot there.
+  const persisted =
+    isNativeApp() || ((await navigator.storage?.persisted?.().catch(() => false)) ?? false);
   return {
     usedBytes: estimate.usage ?? 0,
     quotaBytes: estimate.quota ?? 0,

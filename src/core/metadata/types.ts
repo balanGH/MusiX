@@ -37,6 +37,8 @@ export interface RawTags {
   bpm?: number;
   isrc?: string;
   copyright?: string;
+  /** iTunes-style "part of a compilation" flag (TCMP / cpil / COMPILATION). */
+  compilation?: boolean;
   lyrics?: string;
   /** True when the lyrics came from a synchronised frame (SYLT / TTML-ish). */
   lyricsSynced?: boolean;
@@ -74,6 +76,24 @@ export function emptyTags(): RawTags {
   return { pictures: [] };
 }
 
+/**
+ * Fill every field `target` lacks from a lower-precedence tag block.
+ *
+ * A container often carries two tag formats (ID3v1 behind ID3v2, ID3 in front
+ * of FLAC, INFO next to an ID3 chunk). Parsing the weaker one into its own
+ * `RawTags` and merging it here keeps precedence explicit — parsing both into
+ * one object made whichever ran first win and let multi-valued fields such as
+ * genre concatenate across formats.
+ */
+export function fillMissing(target: RawTags, from: RawTags): void {
+  const out = target as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(from)) {
+    if (key === 'pictures') continue;
+    if (value !== undefined && out[key] === undefined) out[key] = value;
+  }
+  if (target.pictures.length === 0) target.pictures.push(...from.pictures);
+}
+
 /** Canonical tag keys. Every format maps onto these. */
 export type CanonicalKey =
   | 'title'
@@ -94,6 +114,7 @@ export type CanonicalKey =
   | 'bpm'
   | 'isrc'
   | 'copyright'
+  | 'compilation'
   | 'lyrics'
   | 'musicbrainz_trackid'
   | 'musicbrainz_albumid'
@@ -229,6 +250,9 @@ export function applyTag(tags: RawTags, rawKey: string, rawValue: string): void 
       return;
     case 'copyright':
       tags.copyright ??= value;
+      return;
+    case 'compilation':
+      tags.compilation ??= /^(1|true|yes)$/i.test(value);
       return;
     case 'lyrics':
       tags.lyrics ??= value;

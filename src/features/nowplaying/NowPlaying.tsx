@@ -8,71 +8,230 @@
  * at scan time, so this costs a database read, not an image analysis.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ChevronDown,
+  ChevronUp,
   Heart,
   ListMusic,
+  ListPlus,
   Mic2,
   Pause,
   Play,
   Repeat,
   Repeat1,
+  Scissors,
+  Search as SearchIcon,
   Shuffle,
   SkipBack,
   SkipForward,
   SlidersHorizontal,
 } from 'lucide-react';
 import { getLyrics } from '@core/db/repositories/lyrics';
-import { setFavorite } from '@core/db/repositories/tracks';
+import { fetchAndStoreLyrics } from '@core/lyrics/online';
+import { useBackendFeatures } from '@core/net/serverStatus';
+import { openTrackFile } from '@core/platform';
+import {
+  DEFAULT_STEMS,
+  listJobs,
+  probeService,
+  submitFile,
+  trackDisplayName,
+  waitForJob,
+  type JobState,
+} from '@core/studio/client';
 import { formatDuration, formatQuality } from '@core/utils';
 import { useArtwork } from '@state/artworkCache';
 import { playerActions, usePlayer, usePlayerPosition } from '@state/playerStore';
+import { useSettings } from '@state/settingsStore';
 import { useUi } from '@state/uiStore';
-import type { Lyrics } from '@core/types';
+import type { Lyrics, Track } from '@core/types';
 import { Artwork } from '@ui/Artwork';
-import { Chip, IconButton, Slider, cx } from '@ui/primitives';
+import { StemMixer } from '@features/studio/StemMixer';
+import { Button, Chip, IconButton, Slider, Spinner, cx } from '@ui/primitives';
 import { LyricsView } from './LyricsView';
+
+type StemStatus =
+  | { kind: 'idle' }
+  | { kind: 'unavailable' }
+  | { kind: 'none' }
+  | { kind: 'ready'; job: JobState }
+  | { kind: 'processing'; progress: number; stage: string };
 
 export function NowPlaying() {
   const open = useUi((state) => state.nowPlayingOpen);
   const setOpen = useUi((state) => state.setNowPlaying);
   const setQueueOpen = useUi((state) => state.setQueueOpen);
+  const openAddToPlaylist = useUi((state) => state.openAddToPlaylist);
   const track = usePlayer((state) => state.track);
   const status = usePlayer((state) => state.status);
   const shuffle = usePlayer((state) => state.queue.shuffle);
   const repeat = usePlayer((state) => state.queue.repeat);
+  const toast = useUi((state) => state.toast);
+  const onlineLyricsEnabled = useSettings((state) => state.onlineLyrics);
   const navigate = useNavigate();
+  const backendVisible = useBackendFeatures().visible;
 
-  const [lyrics, setLyrics] = useState<Lyrics | null>(null);
+  // Lyrics and the online lookup are both keyed to the track they belong to.
+  // An online lookup can outlive its track (Next, or an auto-advance, while it
+  // is in flight); keyed like this its result can never be shown on the
+  // track that happens to be playing when it lands.
+  const [lyricsEntry, setLyricsEntry] = useState<{ trackId: string; lyrics: Lyrics } | null>(null);
   const [showLyrics, setShowLyrics] = useState(false);
+  const [findingLyricsFor, setFindingLyricsFor] = useState<string | null>(null);
+  const lyrics = lyricsEntry && lyricsEntry.trackId === track?.id ? lyricsEntry.lyrics : null;
+  const findingLyrics = findingLyricsFor !== null && findingLyricsFor === track?.id;
+  const currentTrackId = useRef<string | null>(null);
+  currentTrackId.current = track?.id ?? null;
+  const [stemStatus, setStemStatus] = useState<StemStatus>({ kind: 'idle' });
+  const [mixerOpen, setMixerOpen] = useState(false);
   const { dominant } = useArtwork(track?.artworkId ?? null, false);
+
+  // Has this track already been split into stems? Checked against the local
+  // studio service's job list, not run speculatively (spec §4) — separation
+  // only ever starts when "Split into stems" below is pressed. In the Android
+  // app with no PC server connected there is nothing to ask, so no request.
+  useEffect(() => {
+    setMixerOpen(false);
+    if (!open || !track) return;
+    let cancelled = false;
+    setStemStatus({ kind: 'idle' });
+    if (!backendVisible) {
+      setStemStatus({ kind: 'unavailable' });
+      return;
+    }
+    void (async () => {
+      const service = await probeService();
+      if (cancelled) return;
+      if (!service) {
+        setStemStatus({ kind: 'unavailable' });
+        return;
+      }
+      const jobs = await listJobs().catch(() => []);
+      if (cancelled) return;
+      const label = trackDisplayName(track);
+      const match = jobs.find((job) => job.status === 'complete' && job.sourceName === label);
+      setStemStatus(match ? { kind: 'ready', job: match } : { kind: 'none' });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, track, backendVisible]);
+
+  const processStems = useCallback(
+    async (target: Track) => {
+      setStemStatus({ kind: 'processing', progress: 0, stage: 'Opening file' });
+      try {
+        const file = await openTrackFile(target);
+        if (!file) {
+          toast(`“${target.title}” could not be opened. The folder may need reconnecting.`, {
+            kind: 'error',
+          });
+          setStemStatus({ kind: 'none' });
+          return;
+        }
+
+        const { jobId } = await submitFile(file, target.filename, {
+          stems: DEFAULT_STEMS,
+          displayName: trackDisplayName(target),
+        });
+        const finished = await waitForJob(jobId, (state) =>
+          setStemStatus({ kind: 'processing', progress: state.progress, stage: state.stage }),
+        );
+
+        if (finished.status === 'complete') {
+          setStemStatus({ kind: 'ready', job: finished });
+          setMixerOpen(true);
+          toast(`Separated “${target.title}” into ${finished.stems.length} stems.`, {
+            kind: 'success',
+          });
+        } else {
+          setStemStatus({ kind: 'none' });
+          toast(`Separation failed: ${finished.error ?? 'unknown error'}`, { kind: 'error' });
+        }
+      } catch (error) {
+        setStemStatus({ kind: 'none' });
+        toast(error instanceof Error ? error.message : String(error), { kind: 'error' });
+      }
+    },
+    [toast],
+  );
+
+  const toggleMixer = useCallback(() => {
+    setMixerOpen((current) => {
+      const next = !current;
+      // Opening the mixer starts its own playback; pause the main player so
+      // the original mix and the stem mix don't sound at once.
+      if (next && status === 'playing') void playerActions.toggle();
+      return next;
+    });
+  }, [status]);
 
   // Lyrics are fetched only while the panel is open and only for tracks that
   // have them — no speculative reads (spec §4).
   useEffect(() => {
     if (!open || !track?.hasLyrics) {
-      setLyrics(null);
+      // Keep lyrics just fetched online for this track (the store's copy may
+      // still say `hasLyrics: false`); drop anything for another track.
+      setLyricsEntry((current) => (current && current.trackId === track?.id ? current : null));
       return;
     }
     let cancelled = false;
-    void getLyrics(track.id).then((found) => {
-      if (!cancelled) setLyrics(found ?? null);
+    const trackId = track.id;
+    void getLyrics(trackId).then((found) => {
+      if (!cancelled) setLyricsEntry(found ? { trackId, lyrics: found } : null);
     });
     return () => {
       cancelled = true;
     };
   }, [open, track?.id, track?.hasLyrics]);
 
+  /**
+   * Look this track up on the lyrics service.
+   *
+   * Only ever reached from a click, and only when the user has left online
+   * lyrics on (spec §32). Everything already in the file works offline.
+   */
+  const findLyricsNow = useCallback(async () => {
+    if (!track) return;
+    const trackId = track.id;
+    setFindingLyricsFor(trackId);
+    try {
+      const found = await fetchAndStoreLyrics(track);
+      if (!found) {
+        toast(`No lyrics found for “${track.title}”.`, { kind: 'warn' });
+        return;
+      }
+      // Saved to the database for its own track either way; only shown if
+      // that track is still the one on screen.
+      if (currentTrackId.current === trackId) {
+        setLyricsEntry({ trackId, lyrics: found });
+        setShowLyrics(true);
+        toast(found.kind === 'lrc' ? 'Found synced lyrics.' : 'Found lyrics.', { kind: 'success' });
+      } else {
+        toast(`Found lyrics for “${track.title}”.`, { kind: 'success' });
+      }
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Lyrics lookup failed.', { kind: 'error' });
+    } finally {
+      setFindingLyricsFor((current) => (current === trackId ? null : current));
+    }
+  }, [track, toast]);
+
   if (!open || !track) return null;
 
   const playing = status === 'playing';
   const backdrop = dominant ?? '90 90 110';
+  // `lyrics` covers the case where they were just fetched: the player store's
+  // copy of the track still says `hasLyrics: false` until it refreshes.
+  const hasLyrics = track.hasLyrics || lyrics !== null;
+  const canFindLyrics = onlineLyricsEnabled;
 
   return (
     <div
-      className="fixed inset-0 z-[55] flex flex-col animate-fade-in"
+      // `mx-safe-inset`: fixed, so it escapes the body's safe-area padding.
+      className="mx-safe-inset fixed inset-0 z-[55] flex flex-col animate-fade-in"
       style={{
         // Two stops of the artwork colour over the app background: enough to
         // feel like the album, never enough to hurt text contrast.
@@ -120,17 +279,33 @@ export function NowPlaying() {
               <h1 className="text-2xl font-semibold leading-tight tracking-tight text-text">
                 {track.title}
               </h1>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!track.artistIds[0]) return;
-                  setOpen(false);
-                  navigate(`/artists/${track.artistIds[0]}`);
-                }}
-                className="mt-1 self-start text-base text-muted hover:text-text hover:underline"
-              >
-                {track.artist}
-              </button>
+              {/* One link per credited artist — `track.artist` is just the
+                  joined display string, so a single button here would send
+                  every artist's name to whichever one happens to be first. */}
+              <div className="mt-1 flex flex-wrap gap-x-1 self-start text-base text-muted">
+                {track.artists.map((name, index) => {
+                  const artistId = track.artistIds[index];
+                  return (
+                    <span key={index} className="contents">
+                      {index > 0 && <span aria-hidden="true">/</span>}
+                      {artistId ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOpen(false);
+                            navigate(`/artists/${artistId}`);
+                          }}
+                          className="hover:text-text hover:underline"
+                        >
+                          {name}
+                        </button>
+                      ) : (
+                        name
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
               <button
                 type="button"
                 onClick={() => {
@@ -147,52 +322,75 @@ export function NowPlaying() {
                 <Chip tone={track.lossless ? 'accent' : 'neutral'}>{track.format}</Chip>
                 <span className="text-2xs text-subtle">{formatQuality(track)}</span>
               </div>
+
+              <StemStatusRow
+                status={stemStatus}
+                mixerOpen={mixerOpen}
+                onProcess={() => void processStems(track)}
+                onToggleMixer={toggleMixer}
+              />
             </>
           )}
 
-          <NowPlayingSeek durationMs={track.durationMs} />
+          {stemStatus.kind === 'ready' && mixerOpen ? (
+            // The mixer has its own seek bar and is the "playing line" while it's
+            // open — the main track is paused, so showing both would be two seek
+            // bars for one thing playing.
+            <div className="mt-4 max-h-[45vh] overflow-y-auto">
+              <StemMixer job={stemStatus.job} />
+            </div>
+          ) : (
+            <NowPlayingSeek durationMs={track.durationMs} />
+          )}
 
-          {/* Transport */}
-          <div className="mt-4 flex items-center justify-center gap-3">
-            <IconButton
-              label={shuffle ? 'Turn shuffle off' : 'Turn shuffle on'}
-              size={40}
-              active={shuffle}
-              onClick={playerActions.toggleShuffle}
-            >
-              <Shuffle className="h-[18px] w-[18px]" />
-            </IconButton>
-            <IconButton label="Previous track" size={46} onClick={() => void playerActions.previous()}>
-              <SkipBack className="h-6 w-6 fill-current" />
-            </IconButton>
-            <IconButton
-              label={playing ? 'Pause' : 'Play'}
-              size={62}
-              variant="accent"
-              onClick={() => void playerActions.toggle()}
-            >
-              {playing ? (
-                <Pause className="h-7 w-7 fill-current" />
-              ) : (
-                <Play className="ml-1 h-7 w-7 fill-current" />
-              )}
-            </IconButton>
-            <IconButton label="Next track" size={46} onClick={() => void playerActions.next()}>
-              <SkipForward className="h-6 w-6 fill-current" />
-            </IconButton>
-            <IconButton
-              label={repeat === 'off' ? 'Turn repeat on' : repeat === 'all' ? 'Repeat one' : 'Repeat off'}
-              size={40}
-              active={repeat !== 'off'}
-              onClick={playerActions.cycleRepeat}
-            >
-              {repeat === 'one' ? (
-                <Repeat1 className="h-[18px] w-[18px]" />
-              ) : (
-                <Repeat className="h-[18px] w-[18px]" />
-              )}
-            </IconButton>
-          </div>
+          {/* Transport.
+              Hidden while the mixer is open: it already renders its own
+              complete Play/Pause and seek bar for the stems, and showing this
+              row as well meant two play buttons on screen for what is, from
+              the exclusivity guard's point of view, one audio source at a
+              time — pressing either was liable to silently stop the other. */}
+          {!mixerOpen && (
+            <div className="mt-4 flex items-center justify-center gap-3">
+              <IconButton
+                label={shuffle ? 'Turn shuffle off' : 'Turn shuffle on'}
+                size={40}
+                active={shuffle}
+                onClick={playerActions.toggleShuffle}
+              >
+                <Shuffle className="h-[18px] w-[18px]" />
+              </IconButton>
+              <IconButton label="Previous track" size={46} onClick={() => void playerActions.previous()}>
+                <SkipBack className="h-6 w-6 fill-current" />
+              </IconButton>
+              <IconButton
+                label={playing ? 'Pause' : 'Play'}
+                size={62}
+                variant="accent"
+                onClick={() => void playerActions.toggle()}
+              >
+                {playing ? (
+                  <Pause className="h-7 w-7 fill-current" />
+                ) : (
+                  <Play className="ml-1 h-7 w-7 fill-current" />
+                )}
+              </IconButton>
+              <IconButton label="Next track" size={46} onClick={() => void playerActions.next()}>
+                <SkipForward className="h-6 w-6 fill-current" />
+              </IconButton>
+              <IconButton
+                label={repeat === 'off' ? 'Turn repeat on' : repeat === 'all' ? 'Repeat one' : 'Repeat off'}
+                size={40}
+                active={repeat !== 'off'}
+                onClick={playerActions.cycleRepeat}
+              >
+                {repeat === 'one' ? (
+                  <Repeat1 className="h-[18px] w-[18px]" />
+                ) : (
+                  <Repeat className="h-[18px] w-[18px]" />
+                )}
+              </IconButton>
+            </div>
+          )}
 
           {/* Secondary actions */}
           <div className="mt-6 flex items-center justify-center gap-2">
@@ -200,20 +398,54 @@ export function NowPlaying() {
               label={track.favorite ? 'Remove from favourites' : 'Add to favourites'}
               size={38}
               className={cx(track.favorite && 'text-accent')}
-              onClick={() => void setFavorite(track.id, !track.favorite)}
+              onClick={() => void playerActions.setFavorite(track.id, !track.favorite)}
             >
               <Heart className={cx('h-[18px] w-[18px]', track.favorite && 'fill-current')} />
             </IconButton>
 
             <IconButton
-              label={showLyrics ? 'Hide lyrics' : 'Show lyrics'}
+              label="Save to playlist"
+              title="Add to, or remove from, your playlists"
+              size={38}
+              onClick={() => openAddToPlaylist([track.id])}
+            >
+              <ListPlus className="h-[18px] w-[18px]" />
+            </IconButton>
+
+            <IconButton
+              label={
+                hasLyrics
+                  ? showLyrics
+                    ? 'Hide lyrics'
+                    : 'Show lyrics'
+                  : findingLyrics
+                    ? 'Looking for lyrics'
+                    : 'Find lyrics online'
+              }
               size={38}
               active={showLyrics}
-              disabled={!track.hasLyrics}
-              title={track.hasLyrics ? undefined : 'This file has no embedded lyrics'}
-              onClick={() => setShowLyrics((value) => !value)}
+              disabled={findingLyrics || (!hasLyrics && !canFindLyrics)}
+              title={
+                hasLyrics
+                  ? undefined
+                  : canFindLyrics
+                    ? 'This track has no lyrics — look for them online'
+                    : 'No lyrics in this file. Turn on online lyrics in Settings to look for them.'
+              }
+              onClick={() => {
+                // With no lyrics yet, the button's job is to go and find them
+                // rather than to toggle a panel that has nothing in it.
+                if (hasLyrics) setShowLyrics((value) => !value);
+                else void findLyricsNow();
+              }}
             >
-              <Mic2 className="h-[18px] w-[18px]" />
+              {findingLyrics ? (
+                <Spinner size={16} />
+              ) : hasLyrics ? (
+                <Mic2 className="h-[18px] w-[18px]" />
+              ) : (
+                <SearchIcon className="h-[18px] w-[18px]" />
+              )}
             </IconButton>
 
             <IconButton
@@ -230,6 +462,61 @@ export function NowPlaying() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Whether this track has stems yet, or a way to make some. */
+function StemStatusRow({
+  status,
+  mixerOpen,
+  onProcess,
+  onToggleMixer,
+}: {
+  status: StemStatus;
+  mixerOpen: boolean;
+  onProcess(): void;
+  onToggleMixer(): void;
+}) {
+  if (status.kind === 'idle' || status.kind === 'unavailable') return null;
+
+  if (status.kind === 'processing') {
+    return (
+      <div className="mt-3 flex items-center gap-1.5 text-2xs text-muted">
+        <Spinner size={12} />
+        <span>{status.stage}…</span>
+        <span className="tabular-nums">{Math.round(status.progress)}%</span>
+      </div>
+    );
+  }
+
+  if (status.kind === 'ready') {
+    return (
+      <button
+        type="button"
+        onClick={onToggleMixer}
+        aria-expanded={mixerOpen}
+        title={mixerOpen ? 'Hide the stem mixer' : 'Mix vocals, drums, bass and more'}
+        className="mt-3 flex flex-wrap items-center gap-1.5 self-start"
+      >
+        {status.job.stems.map((stem) => (
+          <Chip key={stem.name} tone="accent">
+            {stem.name}
+          </Chip>
+        ))}
+        {mixerOpen ? (
+          <ChevronUp className="h-3.5 w-3.5 text-subtle" />
+        ) : (
+          <ChevronDown className="h-3.5 w-3.5 text-subtle" />
+        )}
+      </button>
+    );
+  }
+
+  return (
+    <Button size="sm" variant="secondary" className="mt-3 self-start" onClick={onProcess}>
+      <Scissors className="h-3.5 w-3.5" />
+      Split into stems
+    </Button>
   );
 }
 

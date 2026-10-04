@@ -14,7 +14,7 @@ import { parseOgg } from './ogg';
 import { readMpegStreamInfo } from './mpeg';
 import { detectRiff, parseAiff, parseWav } from './riff';
 import { BlobByteSource, decodeIdentifier, type ByteSource } from './reader';
-import { emptyTags, type ParsedAudio, type RawTags, type StreamInfo } from './types';
+import { emptyTags, fillMissing, type ParsedAudio, type RawTags, type StreamInfo } from './types';
 import type { AudioFormat } from '../types';
 
 /**
@@ -141,7 +141,10 @@ export async function parseAudioFile(blob: Blob, filename: string): Promise<Pars
 
         // ID3v1 lives in the last 128 bytes and must be excluded from the audio
         // byte count, or every duration would be very slightly long.
-        const hadId3v1 = await parseId3v1(source, tags);
+        // ID3v2 wins; v1 only fills gaps (its genre must not be appended).
+        const v1 = emptyTags();
+        const hadId3v1 = await parseId3v1(source, v1);
+        fillMissing(tags, v1);
         const audioEnd = source.size - (hadId3v1 ? 128 : 0);
 
         const stream = await readMpegStreamInfo(source, audioStart, audioEnd);
@@ -151,9 +154,11 @@ export async function parseAudioFile(blob: Blob, filename: string): Promise<Pars
 
       case 'flac': {
         // A FLAC may carry an ID3v2 tag in front; read it, but Vorbis comments win.
-        if (audioStart > 0) await parseId3v2(source, tags);
+        const id3 = emptyTags();
+        if (audioStart > 0) await parseId3v2(source, id3);
         const { stream, warnings: flacWarnings } = await parseFlac(source, tags, audioStart);
         warnings.push(...flacWarnings);
+        fillMissing(tags, id3);
         return { tags, stream, warnings };
       }
 
@@ -170,21 +175,26 @@ export async function parseAudioFile(blob: Blob, filename: string): Promise<Pars
       }
 
       case 'wav': {
-        const result = await parseWav(source, tags);
+        const info = emptyTags();
+        const result = await parseWav(source, info);
         warnings.push(...result.warnings);
         // Prefer a proper ID3 chunk over the sparse LIST/INFO tags.
         if (result.id3Chunk) {
           await parseId3v2(new OffsetSource(source, result.id3Chunk.at), tags);
         }
+        fillMissing(tags, info);
         return { tags, stream: result.stream, warnings };
       }
 
       case 'aiff': {
-        const result = await parseAiff(source, tags);
+        const text = emptyTags();
+        const result = await parseAiff(source, text);
         warnings.push(...result.warnings);
+        // An ID3 chunk beats AIFF's NAME/AUTH text chunks.
         if (result.id3Chunk) {
           await parseId3v2(new OffsetSource(source, result.id3Chunk.at), tags);
         }
+        fillMissing(tags, text);
         return { tags, stream: result.stream, warnings };
       }
 
@@ -193,7 +203,9 @@ export async function parseAudioFile(blob: Blob, filename: string): Promise<Pars
         // will report the real duration on first play; until then the track is
         // listed with what the filename tells us, which is honest.
         await parseId3v2(source, tags);
-        await parseId3v1(source, tags);
+        const v1 = emptyTags();
+        await parseId3v1(source, v1);
+        fillMissing(tags, v1);
         warnings.push('raw AAC stream: duration is determined at playback');
         return { tags, stream: unknownStream('aac'), warnings };
       }

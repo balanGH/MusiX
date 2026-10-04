@@ -92,7 +92,18 @@ export function AppShell() {
             className="fixed inset-0 z-50 bg-black/55 md:hidden"
             onClick={() => setMobileNavOpen(false)}
           >
-            <div className="h-full w-[var(--mx-sidebar-width)]" onClick={(e) => e.stopPropagation()}>
+            {/* Fixed, so it escapes the body's safe-area padding: pad it here
+                so the drawer's top and bottom clear the notch and home
+                indicator. The elevated background fills the inset strips. */}
+            <div
+              className="h-full w-fit bg-bg-elevated"
+              style={{
+                paddingTop: 'env(safe-area-inset-top)',
+                paddingBottom: 'env(safe-area-inset-bottom)',
+                paddingLeft: 'env(safe-area-inset-left)',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
               <Sidebar onNavigate={() => setMobileNavOpen(false)} />
             </div>
           </div>

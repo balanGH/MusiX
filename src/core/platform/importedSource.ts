@@ -205,9 +205,7 @@ export async function importFiles(
     try {
       const dir = dirPath ? await resolveDirectory(base, dirPath, true) : base;
       if (!dir) throw new Error('could not create destination directory');
-      const handle = await dir.getFileHandle(fileName, { create: true });
-      const writable = await handle.createWritable();
-      await file.stream().pipeTo(writable);
+      await copyInto(dir, fileName, file);
       copied++;
       bytesCopied += file.size;
       onProgress?.({ copied, total: audioFiles.length, bytesCopied, currentFile: file.name });
@@ -225,6 +223,79 @@ export async function importFiles(
     skipped: files.length - audioFiles.length,
     failed,
   };
+}
+
+/**
+ * Copy one more file into an *already-existing* imported source.
+ *
+ * `importFiles` always mints a fresh source (a new OPFS directory, a new
+ * `sourceId`) — correct for the case it exists for, the user explicitly
+ * picking a folder or a batch of files, where each pick genuinely is a new
+ * source. It is the wrong function for a downloaded song landing one at a
+ * time: calling it per song, as the online-download flow originally did,
+ * gave each individual track its own top-level `MusicSource` and Folder
+ * entry — a library that filled up with one-track "sources" instead of a
+ * single accumulating "Downloads" folder. This is the function that lets
+ * downloads keep adding into one source instead.
+ */
+export async function addFileToSource(
+  sourceId: string,
+  file: File,
+): Promise<{ copied: boolean; reason?: string }> {
+  if (!isSupportedAudioFile(file.name)) {
+    return { copied: false, reason: `“${file.name}” is not a supported audio format.` };
+  }
+  try {
+    const root = await opfsRoot();
+    const base = await root.getDirectoryHandle(sourceId, { create: true });
+    // Re-downloading the same song overwrites its old copy rather than
+    // accumulating duplicates — `file.name` is stable across a re-download
+    // (the backend renames to the same "Title - Artist.mp3" each time), and
+    // the scanner's own fingerprinting then treats it as an updated file at
+    // the same path, not a new track, once it rescans this source.
+    await copyInto(base, safeFileName(file.name), file);
+    return { copied: true };
+  } catch (error) {
+    return { copied: false, reason: describeError(error) };
+  }
+}
+
+/**
+ * Stream `file` into `dir/name`.
+ *
+ * `getFileHandle({ create: true })` creates the entry *before* any byte is
+ * written, so a failed copy would otherwise leave a 0-byte file that the next
+ * scan indexes as an unplayable track. A pre-existing file (a re-download) is
+ * left alone: the writable only replaces it on a successful close.
+ */
+async function copyInto(dir: FileSystemDirectoryHandle, name: string, file: File): Promise<void> {
+  const existed = await dir
+    .getFileHandle(name)
+    .then(() => true)
+    .catch(() => false);
+  try {
+    const handle = await dir.getFileHandle(name, { create: true });
+    const writable = await handle.createWritable();
+    await file.stream().pipeTo(writable);
+  } catch (error) {
+    if (!existed) {
+      await dir.removeEntry(name).catch((cleanupError: unknown) => {
+        log.warn(`could not remove partial copy of ${name}`, cleanupError);
+      });
+    }
+    throw error;
+  }
+}
+
+/**
+ * One path segment safe for OPFS: characters that are path separators or
+ * reserved on common filesystems (so "AC/DC - Thunderstruck.mp3" works)
+ * become `_`.
+ */
+function safeFileName(raw: string): string {
+  // eslint-disable-next-line no-control-regex
+  const cleaned = raw.replace(/[/\\:*?"<>|\u0000-\u001f]/g, '_').trim();
+  return cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned : 'track';
 }
 
 /**
