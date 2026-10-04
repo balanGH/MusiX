@@ -22,7 +22,8 @@ import {
   unregisterAudioSource,
 } from '@core/audio/exclusivity';
 import { clamp, formatDuration, sliderToGain } from '@core/utils';
-import { stemUrl, type JobState, type StemName } from '@core/studio/client';
+import { apiIsCrossOrigin } from '@core/net/apiBase';
+import { fetchStem, stemUrl, type JobState, type StemName } from '@core/studio/client';
 import { Button, IconButton, Slider, cx } from '@ui/primitives';
 
 /** Drift above this is corrected; below it, leave well alone. */
@@ -39,8 +40,22 @@ interface StemChannel {
 
 export type MixPreset = 'original' | 'karaoke' | 'acapella' | 'reduce-vocals';
 
-export function StemMixer({ job }: { job: JobState }) {
+export function StemMixer({
+  job,
+  sources,
+}: {
+  job: JobState;
+  /**
+   * Local files to play instead of the server's copies: stems saved on the
+   * phone (core/studio/savedStems.ts). Same-origin URLs, so they work offline
+   * and need neither CORS nor a download first.
+   */
+  sources?: Partial<Record<StemName, string>>;
+}) {
   const [ready, setReady] = useState(false);
+  /** Stems downloaded so far, when they are fetched before playing (remote server). */
+  const [downloaded, setDownloaded] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -75,10 +90,23 @@ export function StemMixer({ job }: { job: JobState }) {
     const master = context.createGain();
     master.connect(context.destination);
 
+    // A backend on another origin (the PC, from the Android app) is downloaded
+    // first and played from blob: URLs; see `apiIsCrossOrigin`. Same-origin
+    // (the desktop's /api proxy) keeps streaming, so playback starts at once.
+    const download = !sources && apiIsCrossOrigin();
+    const abort = new AbortController();
+    const objectUrls: string[] = [];
+
     const channels: StemChannel[] = job.stems.map((stem) => {
-      const element = new Audio(stemUrl(job.jobId, stem.name));
+      const element = new Audio();
       element.preload = 'auto';
-      element.crossOrigin = 'anonymous';
+      const local = sources?.[stem.name];
+      if (local) {
+        element.src = local;
+      } else if (!download) {
+        element.crossOrigin = 'anonymous';
+        element.src = stemUrl(job.jobId, stem.name);
+      }
       const source = context.createMediaElementSource(element);
       const gain = context.createGain();
       gain.gain.value = sliderToGain(1);
@@ -118,7 +146,29 @@ export function StemMixer({ job }: { job: JobState }) {
     };
     clockElement?.addEventListener('ended', onEnded);
 
+    if (download) {
+      let done = 0;
+      setDownloaded(0);
+      setLoadError(null);
+      // Fetched together: four ~6 MB files finish sooner in parallel than in turn.
+      void Promise.all(
+        channels.map(async (channel) => {
+          const blob = await fetchStem(job.jobId, channel.name, abort.signal);
+          if (abort.signal.aborted) return;
+          const url = URL.createObjectURL(blob);
+          objectUrls.push(url);
+          channel.element.src = url;
+          setDownloaded(++done);
+        }),
+      ).catch((error: unknown) => {
+        if (!abort.signal.aborted) {
+          setLoadError(error instanceof Error ? error.message : 'Could not download the stems.');
+        }
+      });
+    }
+
     return () => {
+      abort.abort();
       clockElement?.removeEventListener('ended', onEnded);
       cancelAnimationFrame(frameRef.current);
       for (const channel of channels) {
@@ -126,13 +176,15 @@ export function StemMixer({ job }: { job: JobState }) {
         channel.element.removeAttribute('src');
         channel.element.load();
       }
+      for (const url of objectUrls) URL.revokeObjectURL(url);
       channelsRef.current = [];
+      setDownloaded(null);
       void context.close().catch(() => undefined);
       contextRef.current = null;
       setReady(false);
       setPlaying(false);
     };
-  }, [job.jobId, job.status, job.stems]);
+  }, [job.jobId, job.status, job.stems, sources]);
 
   /**
    * The sync loop.
@@ -349,7 +401,14 @@ export function StemMixer({ job }: { job: JobState }) {
         </span>
       </div>
 
-      {!ready && <p className="mt-2 text-2xs text-muted">Loading stems…</p>}
+      {!ready && (
+        <p className={cx('mt-2 text-2xs', loadError ? 'text-danger' : 'text-muted')}>
+          {loadError ??
+            (downloaded !== null && downloaded < stems.length
+              ? `Downloading stems ${downloaded} of ${stems.length}…`
+              : 'Loading stems…')}
+        </p>
+      )}
 
       {/* Channels */}
       <ul className="mt-4 space-y-2">

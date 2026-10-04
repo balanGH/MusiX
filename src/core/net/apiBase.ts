@@ -77,6 +77,22 @@ export function apiMediaUrl(path: string): string {
   return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(server.token)}`;
 }
 
+/**
+ * Whether the backend lives on another origin than the page, e.g. a PC on the
+ * LAN from the Android app. Media elements must not load from it directly
+ * then: from the app's https origin a plain-http `<audio>` src is mixed
+ * content, which the WebView upgrades to https and so fails to load, even
+ * though `fetch` to the same address is allowed.
+ */
+export function apiIsCrossOrigin(): boolean {
+  if (typeof location === 'undefined') return false;
+  try {
+    return new URL(apiRoot(), location.href).origin !== location.origin;
+  } catch {
+    return false;
+  }
+}
+
 /** Headers every backend request should carry, merged over `extra`. */
 export function apiHeaders(extra?: Record<string, string>): Record<string, string> {
   return server.token
