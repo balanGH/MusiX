@@ -76,6 +76,8 @@ export function WelcomePage() {
           {strategy === 'native' ? (
             <div className="mt-4 flex flex-col gap-2">
               <PhoneMusicPicker
+                offerChoice
+                startLabel="Scan all music on this phone"
                 onDone={(added) => {
                   if (added) navigate('/', { replace: true });
                 }}

@@ -249,7 +249,8 @@ export function SettingsPage() {
                 key={phoneSource ? 'update' : 'add'}
                 initialExcluded={phoneSource ? (phoneSource.excludedFolders ?? []) : undefined}
                 autoStart={choosingFolders}
-                startLabel={phoneSource ? 'Scan phone music again' : 'Scan phone music'}
+                offerChoice={!phoneSource}
+                startLabel={phoneSource ? 'Scan phone music again' : 'Scan all music on this phone'}
                 onDone={() => setChoosingFolders(false)}
                 onCancel={() => setChoosingFolders(false)}
               />

@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Loader2, Settings as SettingsIcon, Smartphone } from 'lucide-react';
+import { AlertTriangle, FolderOpen, Loader2, Settings as SettingsIcon, Smartphone } from 'lucide-react';
 import {
   ensureMusicPermission,
   folderLabel,
@@ -40,6 +40,12 @@ export interface PhoneMusicPickerProps {
   initialExcluded?: readonly string[];
   /** Label of the button that starts the flow. */
   startLabel?: string;
+  /**
+   * Also offer "Choose music folders" next to the scan button. The scan then
+   * adds everything straight away (skipping junk folders), and choosing opens
+   * the folder list with nothing ticked so the user picks their own.
+   */
+  offerChoice?: boolean;
   /** Called after songs were added or the folder choice was saved. */
   onDone?: (added: boolean) => void;
   /** Lets the parent offer a way back out of the folder list. */
@@ -55,6 +61,7 @@ export function PhoneMusicPicker({
   onDone,
   onCancel,
   autoStart = false,
+  offerChoice = false,
   className,
 }: PhoneMusicPickerProps) {
   const addPhoneMusic = useLibrary((state) => state.addPhoneMusic);
@@ -62,8 +69,15 @@ export function PhoneMusicPicker({
   const toast = useUi((state) => state.toast);
   const [phase, setPhase] = useState<Phase>({ step: 'idle' });
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  // "Try again" after a permission refusal repeats whichever button was used.
+  const lastMode = useRef<'auto' | 'choose' | 'review'>('review');
 
-  const start = async () => {
+  /**
+   * `auto` adds every non-junk folder without showing the list; `choose` shows
+   * the list empty; `review` (the default) shows it pre-ticked.
+   */
+  const start = async (mode: 'auto' | 'choose' | 'review' = 'review') => {
+    lastMode.current = mode;
     setPhase({ step: 'asking' });
     try {
       const permission = await ensureMusicPermission();
@@ -73,12 +87,18 @@ export function PhoneMusicPicker({
       }
       setPhase({ step: 'scanning' });
       const folders = await previewPhoneFolders();
+      if (mode === 'auto' && folders.length > 0) {
+        await add(folders.filter((folder) => folder.junk).map((folder) => folder.folder));
+        return;
+      }
       const excluded = initialExcluded ? new Set(initialExcluded) : null;
       setSelected(
         new Set(
-          folders
-            .filter((folder) => (excluded ? !excluded.has(folder.folder) : !folder.junk))
-            .map((folder) => folder.folder),
+          mode === 'choose'
+            ? []
+            : folders
+                .filter((folder) => (excluded ? !excluded.has(folder.folder) : !folder.junk))
+                .map((folder) => folder.folder),
         ),
       );
       setPhase({ step: 'choose', folders });
@@ -98,8 +118,10 @@ export function PhoneMusicPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoStart]);
 
-  const confirm = async (folders: FolderSummary[]) => {
-    const excluded = folders.filter((folder) => !selected.has(folder.folder)).map((f) => f.folder);
+  const confirm = (folders: FolderSummary[]) =>
+    add(folders.filter((folder) => !selected.has(folder.folder)).map((f) => f.folder));
+
+  const add = async (excluded: string[]) => {
     setPhase({ step: 'adding' });
     const result = await addPhoneMusic(excluded);
     if (result.message) toast(result.message, { kind: result.added ? 'info' : 'warn' });
@@ -143,11 +165,28 @@ export function PhoneMusicPicker({
         className="w-full"
         disabled={busy || scan !== null}
         loading={busy}
-        onClick={() => void start()}
+        onClick={() =>
+          void start(
+            phase.step === 'permission' ? lastMode.current : offerChoice ? 'auto' : 'review',
+          )
+        }
       >
         <Smartphone className="h-4 w-4" />
         {phase.step === 'permission' ? 'Try again' : startLabel}
       </Button>
+
+      {offerChoice && phase.step !== 'permission' && (
+        <Button
+          variant="secondary"
+          size="lg"
+          className="mt-2 w-full"
+          disabled={busy || scan !== null}
+          onClick={() => void start('choose')}
+        >
+          <FolderOpen className="h-4 w-4" />
+          Choose music folders
+        </Button>
+      )}
 
       {phase.step === 'scanning' && (
         <p className="mt-3 flex items-center gap-2 text-xs text-muted">
@@ -243,7 +282,7 @@ function FolderChoice({
       <div className="mb-2 flex items-center justify-between gap-3">
         <p className="text-xs text-muted">
           Found music in {formatCount(folders.length)} folder{folders.length === 1 ? '' : 's'}.
-          Untick anything that is not music.
+          Tick the folders that hold your music.
         </p>
         <button
           type="button"
