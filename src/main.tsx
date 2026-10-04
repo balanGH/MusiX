@@ -11,6 +11,7 @@ import { createRoot } from 'react-dom/client';
 import { registerSW } from 'virtual:pwa-register';
 import { App } from '@app/App';
 import { createLogger, describeError } from '@core/logger';
+import { isNativeApp } from '@core/platform/native';
 import { toast } from '@state/uiStore';
 import './index.css';
 
@@ -33,24 +34,41 @@ createRoot(container).render(
  * `registerType: 'prompt'` in vite.config.ts means an update never reloads the
  * page from under the user — which would cut off whatever is playing. Instead
  * the toast offers the reload and they choose when.
+ *
+ * Skipped inside the Android app: the shell already serves the bundle from the
+ * APK, and a service worker there would keep serving the *previous* bundle
+ * after an app update.
  */
-const updateServiceWorker = registerSW({
-  onNeedRefresh() {
-    toast('A new version of MusiX is ready.', {
-      kind: 'info',
-      durationMs: 0,
-      action: {
-        label: 'Reload',
-        run: () => void updateServiceWorker(true),
-      },
-    });
-  },
-  onOfflineReady() {
-    log.info('app shell cached; MusiX will open without a network');
-  },
-  onRegisterError(error) {
-    // Not fatal: without a service worker the app still runs, it just will not
-    // open while offline.
-    log.warn(`service worker registration failed: ${describeError(error)}`);
-  },
-});
+function startServiceWorker(): void {
+  const updateServiceWorker = registerSW({
+    onNeedRefresh() {
+      toast('A new version of MusiX is ready.', {
+        kind: 'info',
+        durationMs: 0,
+        action: {
+          label: 'Reload',
+          run: () => void updateServiceWorker(true),
+        },
+      });
+    },
+    onOfflineReady() {
+      log.info('app shell cached; MusiX will open without a network');
+    },
+    onRegisterError(error) {
+      // Not fatal: without a service worker the app still runs, it just will not
+      // open while offline.
+      log.warn(`service worker registration failed: ${describeError(error)}`);
+    },
+  });
+}
+
+if (isNativeApp()) {
+  // An APK installed over a build that *did* register a worker (the user's
+  // earlier hand-made APK) would otherwise keep that stale worker forever.
+  void navigator.serviceWorker
+    ?.getRegistrations()
+    .then((registrations) => Promise.all(registrations.map((reg) => reg.unregister())))
+    .catch(() => undefined);
+} else {
+  startServiceWorker();
+}

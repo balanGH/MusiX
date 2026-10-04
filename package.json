@@ -12,7 +12,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify": "npm run typecheck && npm run lint && npm run test"
+    "verify": "npm run typecheck && npm run lint && npm run test",
+    "android:native": "node scripts/apply-android-native.mjs",
+    "android:sync": "npm run build && npm run android:native && npx cap sync android"
   },
   "dependencies": {
     "lucide-react": "^0.344.0",

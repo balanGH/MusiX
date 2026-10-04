@@ -1,0 +1,14 @@
+{
+  "appId": "com.musix.app",
+  "appName": "MusiX",
+  "webDir": "dist",
+  "backgroundColor": "#05051a",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true,
+    "backgroundColor": "#05051a"
+  }
+}

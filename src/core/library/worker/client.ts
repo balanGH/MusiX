@@ -143,7 +143,9 @@ export async function runScan(
 }
 
 async function dispatch(source: MusicSource, options: RunScanOptions): Promise<ScanRecord> {
-  const host = ensureWorker();
+  // Native (phone library) sources list and read files through Capacitor's
+  // bridge, which only exists on the main thread, so they always scan here.
+  const host = source.kind === 'native' ? null : ensureWorker();
   const mode = options.mode ?? 'incremental';
 
   if (!host) {

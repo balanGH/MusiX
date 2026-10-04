@@ -32,6 +32,10 @@ function providerFor(descriptor: ScanSourceDescriptor): SourceProvider {
     }
     return new DirectorySource(descriptor.id, descriptor.name, descriptor.handle);
   }
+  if (descriptor.kind === 'native') {
+    // Never sent here (client.ts scans these in-thread): no bridge in a worker.
+    throw new Error('Phone music can only be scanned on the main thread.');
+  }
   return new ImportedSource(descriptor.id, descriptor.name);
 }
 

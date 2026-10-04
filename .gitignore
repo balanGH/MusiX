@@ -25,3 +25,7 @@ storage
 *.sln
 *.sw?
 .env
+
+# Native projects are generated on the build machine (docs/ANDROID.md)
+/android/
+/ios/

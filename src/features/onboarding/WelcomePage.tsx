@@ -15,6 +15,7 @@ import { formatCount } from '@core/utils';
 import { useLibrary } from '@state/libraryStore';
 import { useUi } from '@state/uiStore';
 import { Button } from '@ui/primitives';
+import { PhoneMusicPicker } from './PhoneMusicPicker';
 
 export function WelcomePage() {
   const addFolder = useLibrary((state) => state.addFolder);
@@ -46,12 +47,7 @@ export function WelcomePage() {
     <div className="mx-scroll flex-1">
       <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col justify-center px-6 py-12">
         <div className="mb-8">
-          <span className="mb-5 flex h-12 w-12 items-end justify-center gap-1 rounded-xl bg-accent/15 pb-3">
-            <span className="h-6 w-1 rounded-full bg-accent" />
-            <span className="h-3.5 w-1 rounded-full bg-accent" />
-            <span className="h-5 w-1 rounded-full bg-accent" />
-            <span className="h-7 w-1 rounded-full bg-accent" />
-          </span>
+          <img src="/icons/icon-192.png" alt="" className="mb-5 h-12 w-12 rounded-xl" />
           <h1 className="text-3xl font-semibold tracking-tight">Your music, on your device</h1>
           <p className="mt-2 text-sm leading-relaxed text-muted">
             MusiX reads the music you already own and builds a library you can browse, search and
@@ -77,44 +73,64 @@ export function WelcomePage() {
           <h2 className="text-base font-semibold">Add your music</h2>
           <p className="mt-1.5 text-xs leading-relaxed text-muted">{importStrategyExplanation()}</p>
 
-          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-            {canPickFolder ? (
+          {strategy === 'native' ? (
+            <div className="mt-4 flex flex-col gap-2">
+              <PhoneMusicPicker
+                onDone={(added) => {
+                  if (added) navigate('/', { replace: true });
+                }}
+              />
+              {/* Still useful for a song sent over chat or saved elsewhere. */}
               <Button
-                variant="primary"
+                variant="secondary"
+                size="lg"
+                disabled={working}
+                onClick={() => void run(() => addFiles({ folder: false }))}
+              >
+                <Upload className="h-4 w-4" />
+                Pick individual files
+              </Button>
+            </div>
+          ) : (
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+              {canPickFolder ? (
+                <Button
+                  variant="primary"
+                  size="lg"
+                  className="flex-1"
+                  disabled={working}
+                  loading={working}
+                  onClick={() => void run(addFolder)}
+                >
+                  <FolderOpen className="h-4 w-4" />
+                  Choose a music folder
+                </Button>
+              ) : (
+                <Button
+                  variant="primary"
+                  size="lg"
+                  className="flex-1"
+                  disabled={working}
+                  loading={working}
+                  onClick={() => void run(() => addFiles({ folder: true }))}
+                >
+                  <FolderOpen className="h-4 w-4" />
+                  Choose a folder
+                </Button>
+              )}
+  
+              <Button
+                variant="secondary"
                 size="lg"
                 className="flex-1"
                 disabled={working}
-                loading={working}
-                onClick={() => void run(addFolder)}
+                onClick={() => void run(() => addFiles({ folder: false }))}
               >
-                <FolderOpen className="h-4 w-4" />
-                Choose a music folder
+                <Upload className="h-4 w-4" />
+                Pick individual files
               </Button>
-            ) : (
-              <Button
-                variant="primary"
-                size="lg"
-                className="flex-1"
-                disabled={working}
-                loading={working}
-                onClick={() => void run(() => addFiles({ folder: true }))}
-              >
-                <FolderOpen className="h-4 w-4" />
-                Choose a folder
-              </Button>
-            )}
-
-            <Button
-              variant="secondary"
-              size="lg"
-              className="flex-1"
-              disabled={working}
-              onClick={() => void run(() => addFiles({ folder: false }))}
-            >
-              <Upload className="h-4 w-4" />
-              Pick individual files
-            </Button>
-          </div>
+            </div>
+          )}
 
           {strategy === 'files' && (
             <p className="mt-3 rounded-lg border border-line bg-bg p-2.5 text-2xs leading-relaxed text-muted">
