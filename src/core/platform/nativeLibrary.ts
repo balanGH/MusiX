@@ -65,13 +65,23 @@ export function storageFolder(row: Pick<MediaStoreTrack, 'path' | 'relativePath'
   return joinPath(volumeLabel(row.path), ...segments);
 }
 
+/**
+ * Where separated stems are saved (MusicLibraryPlugin.saveFromUrl). Never part
+ * of the library: vocals.mp3, drums.mp3 and so on are parts of a song, not songs.
+ */
+export const SAVED_STEMS_FOLDER = 'Music/MusiX/Stems';
+
 /** Map a MediaStore row to a listing entry, or null for files MusiX cannot read. */
 export function toNativeEntry(row: MediaStoreTrack): NativeEntry | null {
   if (!row.path) return null;
   const name = row.name || row.path.slice(row.path.lastIndexOf('/') + 1);
   if (!name || !isSupportedAudioFile(name)) return null;
+  const folder = storageFolder(row);
+  const stems = SAVED_STEMS_FOLDER.toLowerCase();
+  const lower = folder.toLowerCase();
+  if (lower === stems || lower.startsWith(stems + '/')) return null;
   return {
-    path: joinPath(storageFolder(row), name),
+    path: joinPath(folder, name),
     name,
     sizeBytes: row.size > 0 ? row.size : 0,
     lastModified: row.modifiedMs > 0 ? row.modifiedMs : 0,

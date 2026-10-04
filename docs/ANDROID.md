@@ -261,6 +261,24 @@ The app's origin is `https://localhost`, so the plain-HTTP PC address is mixed
 content. `allowMixedContent` and `cleartext` in `capacitor.config.ts` allow it;
 the backend's password is what keeps other devices on the network out.
 
+### Stems saved on the phone
+
+The PC keeps every separation in `backend/storage/outputs/<job id>/`. The phone
+also gets its own copy, so a split song plays with the PC off:
+
+- After **Split into stems** finishes, the app saves the stems automatically to
+  `Music/MusiX/Stems/<Artist - Title>/` (`vocals.mp3`, `drums.mp3`,
+  `bass.mp3`, `other.mp3`). The phone downloads them from the PC itself.
+- Songs split earlier show **Save to phone** under their stems while the PC is
+  connected.
+- Saved stems show **Saved on this phone** in Now Playing, play offline, and
+  can be deleted there with **Remove** (the PC's copy is kept).
+- The phone library scan skips `Music/MusiX/Stems`, so stems never appear as
+  songs.
+- About 23 MB per song for four stems. Needs Android 10 or newer: saving uses
+  MediaStore, which lets the app create files in `Music/` without a storage
+  permission.
+
 ---
 
 ## Phone test checklist
@@ -292,6 +310,14 @@ the backend's password is what keeps other devices on the network out.
 - [ ] The back button closes Now Playing, the queue and dialogs before it
       navigates, and leaves the app only from Home.
 - [ ] Settings › PC server connects to the PC (see above), and Studio appears.
+- [ ] **Split into stems** shows the upload with MB/s, then the PC's stages,
+      then *Saving to this phone*. The mixer plays all stems.
+- [ ] The Files app shows `Music/MusiX/Stems/<song>/` with the stem MP3s, and a
+      rescan does not add them to the library.
+- [ ] Stop the backend (or turn Wi-Fi off). The same song still shows *Saved on
+      this phone* and its mixer still plays.
+- [ ] **Remove** deletes the folder's files; with the PC connected, **Save to
+      phone** brings them back.
 
 ---
 

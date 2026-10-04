@@ -1,14 +1,16 @@
 /**
- * Writing separated stems to the device's own storage.
+ * Writing separated stems to the device's own storage — Android app version.
  *
- * The web build cannot: a browser has no shared folder to write into, and the
- * stems already sit on the same computer as the studio service. The Android
- * app (App branch) replaces this file with one that saves them under
- * Music/MusiX/Stems through its native plugin, so they play without the PC.
+ * This file is the one place the App branch differs from WebApp's no-op
+ * version: the MusicLibrary plugin downloads each stem from the PC straight
+ * into Music/MusiX/Stems/<song>/ (native/android/MusicLibraryPlugin.java), and
+ * they play back from there through Capacitor's file URL, with the PC off.
  *
- * Kept to this one small interface so `core/studio/savedStems.ts` and the UI
+ * Kept to the same small interface so `core/studio/savedStems.ts` and the UI
  * stay identical on both branches.
  */
+
+import { callNative, hasNativePlugin, isNativeApp, nativeFileUrl } from './native';
 
 export interface StemFiles {
   /** Whether stems can be saved on this device at all. */
@@ -25,9 +27,31 @@ export interface StemFiles {
   urlFor(path: string): string | null;
 }
 
+const PLUGIN = 'MusicLibrary';
+
+/** Saving goes through MediaStore without a storage permission, which needs Android 10+. */
+function androidVersion(): number {
+  const match = /Android (\d+)/.exec(navigator.userAgent);
+  return match ? Number(match[1]) : 0;
+}
+
 export const stemFiles: StemFiles = {
-  available: () => false,
-  download: () => Promise.reject(new Error('Saving stems is only available in the MusiX app.')),
-  remove: () => Promise.resolve(),
-  urlFor: () => null,
+  available: () => isNativeApp() && hasNativePlugin(PLUGIN) && androidVersion() >= 10,
+
+  async download(url, folder, fileName) {
+    // The plugin fetches it natively, so it needs an absolute URL.
+    const absolute = new URL(url, location.href).toString();
+    const { path } = await callNative<{ path: string }>(PLUGIN, 'saveFromUrl', {
+      url: absolute,
+      folder,
+      fileName,
+    });
+    return path;
+  },
+
+  async remove(paths) {
+    if (paths.length > 0) await callNative(PLUGIN, 'deleteFiles', { paths: [...paths] });
+  },
+
+  urlFor: (path) => nativeFileUrl(path),
 };

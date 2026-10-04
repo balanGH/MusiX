@@ -112,6 +112,20 @@ describe('toNativeEntry', () => {
   it('falls back to the path for a missing display name', () => {
     expect(toNativeEntry(row('/storage/emulated/0/Music/a.mp3', { name: '' }))?.name).toBe('a.mp3');
   });
+
+  it('leaves out stems saved by MusiX, which are parts of songs', () => {
+    expect(
+      toNativeEntry(
+        row('/storage/emulated/0/Music/MusiX/Stems/Lady Gaga - Shallow/vocals.mp3', {
+          relativePath: 'Music/MusiX/Stems/Lady Gaga - Shallow/',
+        }),
+      ),
+    ).toBeNull();
+    // Android 9 and older report no relative path.
+    expect(toNativeEntry(row('/storage/emulated/0/Music/MusiX/Stems/x/drums.mp3'))).toBeNull();
+    // Other MusiX folders are ordinary music.
+    expect(toNativeEntry(row('/storage/emulated/0/Music/MusiX/song.mp3'))?.path).toBe('Music/MusiX/song.mp3');
+  });
 });
 
 describe('folder groups', () => {
