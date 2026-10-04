@@ -15,7 +15,6 @@ import { formatCount } from '@core/utils';
 import { useLibrary } from '@state/libraryStore';
 import { useUi } from '@state/uiStore';
 import { Button } from '@ui/primitives';
-import { PhoneMusicPicker } from './PhoneMusicPicker';
 
 export function WelcomePage() {
   const addFolder = useLibrary((state) => state.addFolder);
@@ -73,66 +72,44 @@ export function WelcomePage() {
           <h2 className="text-base font-semibold">Add your music</h2>
           <p className="mt-1.5 text-xs leading-relaxed text-muted">{importStrategyExplanation()}</p>
 
-          {strategy === 'native' ? (
-            <div className="mt-4 flex flex-col gap-2">
-              <PhoneMusicPicker
-                offerChoice
-                startLabel="Scan all music on this phone"
-                onDone={(added) => {
-                  if (added) navigate('/', { replace: true });
-                }}
-              />
-              {/* Still useful for a song sent over chat or saved elsewhere. */}
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            {canPickFolder ? (
               <Button
-                variant="secondary"
-                size="lg"
-                disabled={working}
-                onClick={() => void run(() => addFiles({ folder: false }))}
-              >
-                <Upload className="h-4 w-4" />
-                Pick individual files
-              </Button>
-            </div>
-          ) : (
-            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-              {canPickFolder ? (
-                <Button
-                  variant="primary"
-                  size="lg"
-                  className="flex-1"
-                  disabled={working}
-                  loading={working}
-                  onClick={() => void run(addFolder)}
-                >
-                  <FolderOpen className="h-4 w-4" />
-                  Choose a music folder
-                </Button>
-              ) : (
-                <Button
-                  variant="primary"
-                  size="lg"
-                  className="flex-1"
-                  disabled={working}
-                  loading={working}
-                  onClick={() => void run(() => addFiles({ folder: true }))}
-                >
-                  <FolderOpen className="h-4 w-4" />
-                  Choose a folder
-                </Button>
-              )}
-  
-              <Button
-                variant="secondary"
+                variant="primary"
                 size="lg"
                 className="flex-1"
                 disabled={working}
-                onClick={() => void run(() => addFiles({ folder: false }))}
+                loading={working}
+                onClick={() => void run(addFolder)}
               >
-                <Upload className="h-4 w-4" />
-                Pick individual files
+                <FolderOpen className="h-4 w-4" />
+                Choose a music folder
               </Button>
-            </div>
-          )}
+            ) : (
+              <Button
+                variant="primary"
+                size="lg"
+                className="flex-1"
+                disabled={working}
+                loading={working}
+                onClick={() => void run(() => addFiles({ folder: true }))}
+              >
+                <FolderOpen className="h-4 w-4" />
+                Choose a folder
+              </Button>
+            )}
+
+            <Button
+              variant="secondary"
+              size="lg"
+              className="flex-1"
+              disabled={working}
+              onClick={() => void run(() => addFiles({ folder: false }))}
+            >
+              <Upload className="h-4 w-4" />
+              Pick individual files
+            </Button>
+          </div>
 
           {strategy === 'files' && (
             <p className="mt-3 rounded-lg border border-line bg-bg p-2.5 text-2xs leading-relaxed text-muted">

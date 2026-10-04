@@ -9,10 +9,7 @@
  *   Android Chrome     file picker only, so files are copied into OPFS
  *   iOS Safari         file picker only, tighter storage quota
  *   Firefox            file picker only (no File System Access API at all)
- *   MusiX Android app  MediaStore through a native plugin, files stay in place
  */
-
-import { nativeLibraryAvailable } from './nativeSource';
 
 export interface Capabilities {
   /** `showDirectoryPicker` — lets MusiX scan a folder without copying it. */
@@ -33,11 +30,6 @@ export interface Capabilities {
   touch: boolean;
   /** Running as an installed PWA. */
   standalone: boolean;
-  /**
-   * Inside the Android app with the MusicLibrary plugin: the phone's music is
-   * listed through MediaStore and read in place (nativeSource.ts).
-   */
-  nativeLibrary: boolean;
 }
 
 let cached: Capabilities | null = null;
@@ -64,7 +56,6 @@ export function capabilities(): Capabilities {
       win?.matchMedia?.('(display-mode: standalone)').matches ||
       (nav as unknown as { standalone?: boolean })?.standalone === true ||
       false,
-    nativeLibrary: nativeLibraryAvailable(),
   };
   return cached;
 }
@@ -76,22 +67,14 @@ export function capabilities(): Capabilities {
  * `files` has to copy into OPFS, because a mobile browser cannot hand back a
  * handle that survives a reload — the alternative would be re-picking the whole
  * library on every launch.
- * `native` is the Android app, which reads the phone's library in place.
  */
-export function importStrategy(): 'folder' | 'files' | 'native' {
-  const caps = capabilities();
-  if (caps.nativeLibrary) return 'native';
-  return caps.directoryPicker ? 'folder' : 'files';
+export function importStrategy(): 'folder' | 'files' {
+  return capabilities().directoryPicker ? 'folder' : 'files';
 }
 
 /** One-line explanation for the onboarding screen. */
 export function importStrategyExplanation(): string {
-  switch (importStrategy()) {
-    case 'native':
-      return 'MusiX reads the music already on this phone, where it is. Nothing is copied, moved or uploaded, and new songs appear when you rescan.';
-    case 'folder':
-      return 'MusiX will index the folder in place. Your files are never copied or moved.';
-    default:
-      return 'This browser cannot re-open a folder after a reload, so the files you pick are copied into MusiX’s private storage on this device.';
-  }
+  return importStrategy() === 'folder'
+    ? 'MusiX will index the folder in place. Your files are never copied or moved.'
+    : 'This browser cannot re-open a folder after a reload, so the files you pick are copied into MusiX’s private storage on this device.';
 }

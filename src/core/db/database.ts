@@ -7,7 +7,6 @@
  */
 
 import { createLogger } from '../logger';
-import { isNativeApp } from '../platform/native';
 import { openDatabase, request } from './idb';
 import { DB_NAME, DB_VERSION, MIGRATIONS, Stores } from './schema';
 
@@ -93,9 +92,6 @@ export async function deleteDatabase(): Promise<void> {
  * silently for installed PWAs and frequently-visited origins.
  */
 export async function requestPersistentStorage(): Promise<boolean> {
-  // Inside the Android app the WebView's storage belongs to the app and is
-  // only cleared with it, so there is nothing to ask for.
-  if (isNativeApp()) return false;
   if (!navigator.storage?.persist) return false;
   try {
     if (await navigator.storage.persisted()) return true;
@@ -115,9 +111,7 @@ export interface StorageReport {
 
 export async function storageReport(): Promise<StorageReport> {
   const estimate = (await navigator.storage?.estimate?.()) ?? {};
-  // App storage is never evicted by the browser, so the warning is moot there.
-  const persisted =
-    isNativeApp() || ((await navigator.storage?.persisted?.().catch(() => false)) ?? false);
+  const persisted = (await navigator.storage?.persisted?.().catch(() => false)) ?? false;
   return {
     usedBytes: estimate.usage ?? 0,
     quotaBytes: estimate.quota ?? 0,

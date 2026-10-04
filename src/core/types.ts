@@ -168,10 +168,8 @@ export interface Folder {
  * never copied or moved (spec §9). Desktop Chromium only.
  * `imported`  - individually picked files copied into the origin-private file
  * system, which is the only way mobile browsers can offer persistence.
- * `native`    - the phone's music library as Android's MediaStore lists it, in
- * the MusiX app only. Files are read in place (core/platform/nativeSource.ts).
  */
-export type SourceKind = 'directory' | 'imported' | 'native';
+export type SourceKind = 'directory' | 'imported';
 
 export interface MusicSource {
   id: string;
@@ -182,11 +180,6 @@ export interface MusicSource {
   trackCount: number;
   /** Key into the `handles` store; null for `imported` sources. */
   handleKey: string | null;
-  /**
-   * `native` only: folders the user left out, as paths from the storage root
-   * (e.g. "WhatsApp"). Absent on rows written before this existed.
-   */
-  excludedFolders?: string[];
 }
 
 export type PlaylistKind = 'manual' | 'smart';

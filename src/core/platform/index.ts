@@ -12,7 +12,6 @@ import type { MusicSource, Track } from '../types';
 import { capabilities } from './capabilities';
 import { DirectorySource, forgetHandle, restoreDirectorySource } from './directorySource';
 import { ImportedSource, restoreImportedSource } from './importedSource';
-import { NativeSource, restoreNativeSource } from './nativeSource';
 import type { SourceProvider } from './fs';
 
 const log = createLogger('fs');
@@ -48,8 +47,6 @@ export async function providerFor(source: MusicSource): Promise<SourceProvider |
     provider = await restoreDirectorySource(source.id, source.name, source.handleKey);
   } else if (source.kind === 'imported') {
     provider = restoreImportedSource(source.id, source.name);
-  } else if (source.kind === 'native') {
-    provider = restoreNativeSource(source);
   }
 
   if (provider) providers.set(source.id, provider);
@@ -147,18 +144,8 @@ export function pickFiles(options: { folder?: boolean } = {}): Promise<File[]> {
   });
 }
 
-export { capabilities, DirectorySource, ImportedSource, NativeSource };
+export { capabilities, DirectorySource, ImportedSource };
 export { pickDirectory } from './directorySource';
 export { addFileToSource, importFiles, importedStorageUsage } from './importedSource';
 export { importStrategy, importStrategyExplanation } from './capabilities';
-export {
-  ensureMusicPermission,
-  musicLibrary,
-  NATIVE_SOURCE_ID,
-  NATIVE_SOURCE_NAME,
-  nativeLibraryAvailable,
-  previewPhoneFolders,
-  type NativePermission,
-} from './nativeSource';
-export { folderLabel, type FolderSummary } from './nativeLibrary';
 export type { AccessState, FileEntry, SourceProvider } from './fs';

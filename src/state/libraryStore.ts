@@ -22,13 +22,8 @@ import {
   addFileToSource,
   capabilities,
   disposeSource,
-  ensureMusicPermission,
   importFiles,
   ImportedSource,
-  NATIVE_SOURCE_ID,
-  NATIVE_SOURCE_NAME,
-  NativeSource,
-  previewPhoneFolders,
   pickDirectory,
   pickFiles,
   registerProvider,
@@ -112,11 +107,6 @@ export interface LibraryState {
   refreshCounts(): Promise<void>;
   addFolder(): Promise<{ added: boolean; message?: string }>;
   addFiles(options: { folder: boolean }): Promise<{ added: boolean; message?: string }>;
-  /**
-   * Android app: add (or update) the phone-library source. `excludedFolders`
-   * defaults to the source's current choice, or to the junk-looking folders.
-   */
-  addPhoneMusic(excludedFolders?: string[]): Promise<{ added: boolean; message?: string }>;
   importDownloadedFile(file: File): Promise<{ added: boolean; message?: string }>;
   scanSource(sourceId: string, mode?: 'incremental' | 'full'): Promise<void>;
   scanAll(mode?: 'incremental' | 'full'): Promise<void>;
@@ -176,9 +166,6 @@ export const useLibrary = create<LibraryState>()((set, get) => ({
 
   /** Desktop path: index a real folder in place (spec §9). */
   async addFolder() {
-    // The Android app has no folder picker that works; "add a folder" there
-    // means the phone's library (every "Add folder" button lands here).
-    if (capabilities().nativeLibrary) return get().addPhoneMusic();
     if (!capabilities().directoryPicker) {
       return {
         added: false,
@@ -268,70 +255,6 @@ export const useLibrary = create<LibraryState>()((set, get) => ({
     } catch (error) {
       const message = describeError(error);
       set({ importing: null, error: message });
-      return { added: false, message };
-    }
-  },
-
-  /**
-   * Android app path: the phone's own music library, read in place.
-   *
-   * There is only ever one such source (fixed id), so calling this again —
-   * from "Scan phone music" or with a new folder choice — updates and rescans
-   * it rather than adding a second copy of the same files.
-   */
-  async addPhoneMusic(excludedFolders) {
-    try {
-      const permission = await ensureMusicPermission();
-      if (permission !== 'granted') {
-        return {
-          added: false,
-          message:
-            permission === 'denied'
-              ? 'MusiX is not allowed to read music. In Android Settings, open Apps › MusiX › Permissions › Music and audio and choose Allow.'
-              : 'MusiX needs permission to read the music on this phone.',
-        };
-      }
-
-      const existing = await getSource(NATIVE_SOURCE_ID);
-      const excluded =
-        excludedFolders ??
-        existing?.excludedFolders ??
-        (await previewPhoneFolders())
-          .filter((folder) => folder.junk)
-          .map((folder) => folder.folder);
-
-      const source: MusicSource = existing
-        ? { ...existing, excludedFolders: excluded }
-        : {
-            id: NATIVE_SOURCE_ID,
-            kind: 'native',
-            name: NATIVE_SOURCE_NAME,
-            addedAt: Date.now(),
-            lastScanAt: null,
-            trackCount: 0,
-            handleKey: null,
-            excludedFolders: excluded,
-          };
-      // A fresh provider, so the new exclusions apply to this scan.
-      registerProvider(new NativeSource(source.id, source.name, excluded));
-      await putSource(source);
-      set((state) => ({
-        sources: existing
-          ? state.sources.map((candidate) => (candidate.id === source.id ? source : candidate))
-          : [...state.sources, source],
-      }));
-
-      // Incremental for an update: unchanged files are skipped, and files in
-      // newly excluded folders are pruned because the listing no longer has them.
-      await get().scanSource(source.id, existing ? 'incremental' : 'full');
-      const trackCount = (await getSource(source.id))?.trackCount ?? 0;
-      return {
-        added: trackCount > 0,
-        message: trackCount === 0 ? 'No songs were found in the folders you chose.' : undefined,
-      };
-    } catch (error) {
-      const message = describeError(error);
-      set({ error: message });
       return { added: false, message };
     }
   },
