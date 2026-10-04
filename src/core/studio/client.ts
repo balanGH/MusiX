@@ -247,3 +247,19 @@ export async function waitForJob(
 export function stemUrl(jobId: string, stem: StemName): string {
   return apiMediaUrl(`/jobs/${jobId}/stems/${stem}`);
 }
+
+/**
+ * Download one stem into memory.
+ *
+ * For a backend on another origin (see `apiIsCrossOrigin`): the mixer plays
+ * the result from a `blob:` URL, which is same-origin and so works with Web
+ * Audio and with no mixed-content rules in the way.
+ */
+export async function fetchStem(jobId: string, stem: StemName, signal?: AbortSignal): Promise<Blob> {
+  const response = await fetch(apiUrl(`/jobs/${jobId}/stems/${stem}`), {
+    headers: apiHeaders(),
+    signal,
+  });
+  if (!response.ok) throw new Error(`Could not download the ${stem} stem (${response.status}).`);
+  return response.blob();
+}

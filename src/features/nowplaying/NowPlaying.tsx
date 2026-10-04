@@ -8,7 +8,7 @@
  * at scan time, so this costs a database read, not an image analysis.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ChevronDown,
@@ -23,10 +23,12 @@ import {
   Repeat1,
   Scissors,
   Search as SearchIcon,
+  Smartphone,
   Shuffle,
   SkipBack,
   SkipForward,
   SlidersHorizontal,
+  Trash2,
 } from 'lucide-react';
 import { getLyrics } from '@core/db/repositories/lyrics';
 import { fetchAndStoreLyrics } from '@core/lyrics/online';
@@ -41,6 +43,15 @@ import {
   waitForJob,
   type JobState,
 } from '@core/studio/client';
+import {
+  canSaveStems,
+  getSavedStems,
+  jobFromSavedStems,
+  removeSavedStems,
+  saveStems,
+  savedStemSources,
+  type SavedStems,
+} from '@core/studio/savedStems';
 import { formatBytes, formatDuration, formatQuality } from '@core/utils';
 import { useArtwork } from '@state/artworkCache';
 import { playerActions, usePlayer, usePlayerPosition } from '@state/playerStore';
@@ -56,7 +67,7 @@ type StemStatus =
   | { kind: 'idle' }
   | { kind: 'unavailable' }
   | { kind: 'none' }
-  | { kind: 'ready'; job: JobState }
+  | { kind: 'ready'; job: JobState; saved: SavedStems | null }
   | { kind: 'processing'; progress: number; stage: string };
 
 export function NowPlaying() {
@@ -69,6 +80,7 @@ export function NowPlaying() {
   const shuffle = usePlayer((state) => state.queue.shuffle);
   const repeat = usePlayer((state) => state.queue.repeat);
   const toast = useUi((state) => state.toast);
+  const confirm = useUi((state) => state.requestConfirm);
   const onlineLyricsEnabled = useSettings((state) => state.onlineLyrics);
   const navigate = useNavigate();
   const backendVisible = useBackendFeatures().visible;
@@ -86,6 +98,16 @@ export function NowPlaying() {
   currentTrackId.current = track?.id ?? null;
   const [stemStatus, setStemStatus] = useState<StemStatus>({ kind: 'idle' });
   const [mixerOpen, setMixerOpen] = useState(false);
+  /** Bumped to look the stems up again, e.g. after removing them from the phone. */
+  const [stemRefresh, setStemRefresh] = useState(0);
+  // Memoised: the mixer rebuilds its whole audio graph when `sources` changes.
+  const savedSources = useMemo(
+    () =>
+      stemStatus.kind === 'ready' && stemStatus.saved
+        ? savedStemSources(stemStatus.saved)
+        : undefined,
+    [stemStatus],
+  );
   const { dominant } = useArtwork(track?.artworkId ?? null, false);
 
   // Has this track already been split into stems? Checked against the local
@@ -97,11 +119,18 @@ export function NowPlaying() {
     if (!open || !track) return;
     let cancelled = false;
     setStemStatus({ kind: 'idle' });
-    if (!backendVisible) {
-      setStemStatus({ kind: 'unavailable' });
-      return;
-    }
     void (async () => {
+      // Stems saved on this phone come first: they play with the PC off.
+      const saved = await getSavedStems(track.id).catch(() => null);
+      if (cancelled) return;
+      if (saved) {
+        setStemStatus({ kind: 'ready', job: jobFromSavedStems(saved), saved });
+        return;
+      }
+      if (!backendVisible) {
+        setStemStatus({ kind: 'unavailable' });
+        return;
+      }
       const service = await probeService();
       if (cancelled) return;
       if (!service) {
@@ -112,12 +141,57 @@ export function NowPlaying() {
       if (cancelled) return;
       const label = trackDisplayName(track);
       const match = jobs.find((job) => job.status === 'complete' && job.sourceName === label);
-      setStemStatus(match ? { kind: 'ready', job: match } : { kind: 'none' });
+      setStemStatus(match ? { kind: 'ready', job: match, saved: null } : { kind: 'none' });
     })();
     return () => {
       cancelled = true;
     };
-  }, [open, track, backendVisible]);
+  }, [open, track, backendVisible, stemRefresh]);
+
+  /** Copy a finished job's stems to the phone, showing progress in the stem row. */
+  const saveToPhone = useCallback(
+    async (target: Track, job: JobState): Promise<SavedStems | null> => {
+      try {
+        return await saveStems(target.id, job, (done, total) =>
+          setStemStatus({
+            kind: 'processing',
+            progress: total > 0 ? (done / total) * 100 : 100,
+            stage: `Saving to this phone, ${done} of ${total}`,
+          }),
+        );
+      } catch (error) {
+        toast(
+          `Couldn’t save the stems to this phone: ${error instanceof Error ? error.message : String(error)}`,
+          { kind: 'warn' },
+        );
+        return null;
+      }
+    },
+    [toast],
+  );
+
+  const removeFromPhone = useCallback(
+    async (target: Track, saved: SavedStems) => {
+      const ok = await confirm({
+        title: 'Remove the stems from this phone?',
+        body: 'The saved files are deleted from this phone. The copy on your PC is not touched, so you can save them again while it is connected.',
+        preview: [`Music/MusiX/Stems/${saved.folder}`],
+        confirmLabel: 'Remove',
+        destructive: true,
+      });
+      if (!ok) return;
+      try {
+        await removeSavedStems(target.id);
+        setMixerOpen(false);
+        toast('Removed the stems from this phone.', { kind: 'success' });
+      } catch (error) {
+        toast(error instanceof Error ? error.message : String(error), { kind: 'error' });
+      } finally {
+        setStemRefresh((value) => value + 1);
+      }
+    },
+    [confirm, toast],
+  );
 
   const processStems = useCallback(
     async (target: Track) => {
@@ -155,7 +229,10 @@ export function NowPlaying() {
         );
 
         if (finished.status === 'complete') {
-          setStemStatus({ kind: 'ready', job: finished });
+          // Kept on the PC by the service, and copied to the phone too, so the
+          // mix still plays when the PC is off.
+          const saved = canSaveStems() ? await saveToPhone(target, finished) : null;
+          setStemStatus({ kind: 'ready', job: saved ? jobFromSavedStems(saved) : finished, saved });
           setMixerOpen(true);
           toast(`Separated “${target.title}” into ${finished.stems.length} stems.`, {
             kind: 'success',
@@ -169,7 +246,7 @@ export function NowPlaying() {
         toast(error instanceof Error ? error.message : String(error), { kind: 'error' });
       }
     },
-    [toast],
+    [toast, saveToPhone],
   );
 
   const toggleMixer = useCallback(() => {
@@ -342,6 +419,17 @@ export function NowPlaying() {
                 mixerOpen={mixerOpen}
                 onProcess={() => void processStems(track)}
                 onToggleMixer={toggleMixer}
+                canSave={canSaveStems() && backendVisible}
+                onSave={(job) =>
+                  void saveToPhone(track, job).then((saved) =>
+                    setStemStatus({
+                      kind: 'ready',
+                      job: saved ? jobFromSavedStems(saved) : job,
+                      saved,
+                    }),
+                  )
+                }
+                onRemove={(saved) => void removeFromPhone(track, saved)}
               />
             </>
           )}
@@ -351,7 +439,7 @@ export function NowPlaying() {
             // open — the main track is paused, so showing both would be two seek
             // bars for one thing playing.
             <div className="mt-4 max-h-[45vh] overflow-y-auto">
-              <StemMixer job={stemStatus.job} />
+              <StemMixer job={stemStatus.job} sources={savedSources} />
             </div>
           ) : (
             <NowPlayingSeek durationMs={track.durationMs} />
@@ -485,11 +573,18 @@ function StemStatusRow({
   mixerOpen,
   onProcess,
   onToggleMixer,
+  canSave,
+  onSave,
+  onRemove,
 }: {
   status: StemStatus;
   mixerOpen: boolean;
   onProcess(): void;
   onToggleMixer(): void;
+  /** Saving to this device is possible right now (Android app, PC reachable). */
+  canSave: boolean;
+  onSave(job: JobState): void;
+  onRemove(saved: SavedStems): void;
 }) {
   if (status.kind === 'idle' || status.kind === 'unavailable') return null;
 
@@ -504,25 +599,49 @@ function StemStatusRow({
   }
 
   if (status.kind === 'ready') {
+    const saved = status.saved;
     return (
-      <button
-        type="button"
-        onClick={onToggleMixer}
-        aria-expanded={mixerOpen}
-        title={mixerOpen ? 'Hide the stem mixer' : 'Mix vocals, drums, bass and more'}
-        className="mt-3 flex flex-wrap items-center gap-1.5 self-start"
-      >
-        {status.job.stems.map((stem) => (
-          <Chip key={stem.name} tone="accent">
-            {stem.name}
-          </Chip>
-        ))}
-        {mixerOpen ? (
-          <ChevronUp className="h-3.5 w-3.5 text-subtle" />
+      <div className="mt-3 flex flex-col items-start gap-1.5">
+        <button
+          type="button"
+          onClick={onToggleMixer}
+          aria-expanded={mixerOpen}
+          title={mixerOpen ? 'Hide the stem mixer' : 'Mix vocals, drums, bass and more'}
+          className="flex flex-wrap items-center gap-1.5 self-start"
+        >
+          {status.job.stems.map((stem) => (
+            <Chip key={stem.name} tone="accent">
+              {stem.name}
+            </Chip>
+          ))}
+          {mixerOpen ? (
+            <ChevronUp className="h-3.5 w-3.5 text-subtle" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5 text-subtle" />
+          )}
+        </button>
+        {saved ? (
+          <div className="flex items-center gap-2 text-2xs text-muted">
+            <Smartphone className="h-3.5 w-3.5" />
+            <span>Saved on this phone</span>
+            <button
+              type="button"
+              onClick={() => onRemove(saved)}
+              className="mx-tap inline-flex items-center gap-1 text-subtle hover:text-danger"
+            >
+              <Trash2 className="h-3 w-3" />
+              Remove
+            </button>
+          </div>
         ) : (
-          <ChevronDown className="h-3.5 w-3.5 text-subtle" />
+          canSave && (
+            <Button size="sm" variant="ghost" onClick={() => onSave(status.job)}>
+              <Smartphone className="h-3.5 w-3.5" />
+              Save to phone
+            </Button>
+          )
         )}
-      </button>
+      </div>
     );
   }
 
