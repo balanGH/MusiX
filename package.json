@@ -17,8 +17,8 @@
     "android:sync": "npm run build && npm run android:native && npx cap sync android",
     "android:open": "npm run android:sync && npx cap open android",
     "android:run": "npm run android:sync && npx cap run android",
-    "android:apk": "npm run android:sync && cd android && gradlew.bat assembleDebug",
-    "android:apk:release": "npm run android:sync && cd android && gradlew.bat assembleRelease"
+    "android:apk": "npm run android:sync && node scripts/gradle.mjs assembleDebug",
+    "android:apk:release": "npm run android:sync && node scripts/gradle.mjs assembleRelease"
   },
   "dependencies": {
     "@capacitor/app": "^7.1.2",

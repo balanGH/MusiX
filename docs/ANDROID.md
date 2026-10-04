@@ -33,7 +33,31 @@ shell. Two things are native:
 | **JDK** | 21 (Capacitor 7 requires it; 17 is not enough) | [Temurin 21](https://adoptium.net/temurin/releases/?version=21) |
 | **Android SDK** | Platform 35, Build-Tools 35 | Command-line tools, below, or Android Studio's SDK Manager |
 
-Android Studio is optional. Without it:
+Android Studio is optional.
+
+### macOS (including Apple silicon / M1)
+
+With [Homebrew](https://brew.sh):
+
+```bash
+brew install --cask temurin@21                  # JDK 21, native arm64
+brew install --cask android-commandlinetools    # sdkmanager
+
+# Add to ~/.zshrc, then open a new terminal:
+export JAVA_HOME=$(/usr/libexec/java_home -v 21)
+export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
+export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools"
+
+sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+sdkmanager --licenses        # answer y to each
+java -version                # should say 21
+adb --version                # should print a version
+```
+
+If Gradle says *SDK location not found*, create `android/local.properties`
+containing `sdk.dir=/opt/homebrew/share/android-commandlinetools`.
+
+### Windows
 
 1. On <https://developer.android.com/studio>, scroll to *Command line tools
    only* and download the zip.
@@ -59,6 +83,10 @@ Android Studio is optional. Without it:
 
 If Gradle says *SDK location not found*, create `android/local.properties`
 containing `sdk.dir=C:\\Android` (with doubled backslashes).
+
+`npm run android:apk` works the same on both: `scripts/gradle.mjs` runs
+`gradlew.bat` on Windows and `./gradlew` elsewhere. To call Gradle yourself,
+use `./gradlew` on macOS and `gradlew.bat` on Windows.
 
 ---
 
@@ -240,8 +268,10 @@ the backend's password is what keeps other devices on the network out.
 - [ ] First launch shows the MusiX icon and the welcome screen with **Scan all
       music on this phone**, **Choose music folders** and **Pick individual
       files**.
-- [ ] Scanning shows Android's *Music and audio* permission dialog (*Files and
-      media* on Android 12 and older).
+- [ ] Scanning shows Android's permission dialog. It is called *Music and
+      audio* on Android 13+, *Files and media* on 11–12 and *Storage* on 10.
+      Before the first scan, Settings › Apps › MusiX › Permissions lists it
+      under *Not allowed*; if that page is empty, the APK is an old build.
 - [ ] Deny once, then tap **Try again**. The dialog appears again.
 - [ ] Deny with "Don't ask again". The app explains how to allow it, and **Open
       app settings** opens MusiX's settings page. After allowing it there, Try
@@ -303,8 +333,8 @@ android {
 Passing the credentials through environment variables keeps them out of the
 build file, which is the part that gets committed.
 
-For the Play Store, build an App Bundle instead (`cd android && gradlew.bat
-bundleRelease`). Leave the yt-dlp downloader out of any store build: it breaks
+For the Play Store, build an App Bundle instead
+(`node scripts/gradle.mjs bundleRelease`). Leave the yt-dlp downloader out of any store build: it breaks
 YouTube's terms and store policies.
 
 ---

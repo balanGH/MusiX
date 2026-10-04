@@ -207,11 +207,21 @@ export function PhoneMusicPicker({
   );
 }
 
+/** What Android calls the permission, which changed twice across versions. */
+function permissionName(): string {
+  const match = /Android (\d+)/.exec(navigator.userAgent);
+  const version = match ? Number(match[1]) : 13;
+  if (version >= 13) return 'Music and audio';
+  if (version >= 11) return 'Files and media';
+  return 'Storage';
+}
+
 function PermissionHelp({ state }: { state: Exclude<NativePermission, 'granted'> }) {
+  const name = permissionName();
   if (state !== 'denied') {
     return (
       <p className="mt-3 rounded-lg border border-line bg-bg p-2.5 text-xs leading-relaxed text-muted">
-        MusiX needs the <strong className="text-text">Music and audio</strong> permission to find
+        MusiX needs the <strong className="text-text">{name}</strong> permission to find
         the songs on this phone. It only reads them — nothing is changed, moved or uploaded. Tap{' '}
         <strong className="text-text">Try again</strong> and choose <strong className="text-text">Allow</strong>.
       </p>
@@ -223,8 +233,7 @@ function PermissionHelp({ state }: { state: Exclude<NativePermission, 'granted'>
       <p>
         Android is no longer showing the permission request for MusiX. To allow it: open{' '}
         <strong className="text-text">Settings › Apps › MusiX › Permissions</strong>, tap{' '}
-        <strong className="text-text">Music and audio</strong> (or{' '}
-        <strong className="text-text">Files and media</strong> on older phones) and choose{' '}
+        <strong className="text-text">{name}</strong> and choose{' '}
         <strong className="text-text">Allow</strong>. Then come back and tap Try again.
       </p>
       <Button
