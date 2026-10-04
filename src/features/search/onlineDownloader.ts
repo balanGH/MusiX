@@ -1,4 +1,4 @@
-import { API_ROOT } from '@core/net/apiBase';
+import { apiHeaders, apiUrl } from '@core/net/apiBase';
 
 export interface OnlineSong {
     id: string;
@@ -34,15 +34,13 @@ export interface DownloadJob {
     error?: string | null;
 }
 
-/** Same `/api` base as the Studio client (proxied to the local service). */
-const API_BASE = API_ROOT;
-
 export async function searchOnline(
     query: string,
 ): Promise<OnlineSong[]> {
 
     const response = await fetch(
-        `${API_BASE}/online/search?q=${encodeURIComponent(query)}`,
+        apiUrl(`/online/search?q=${encodeURIComponent(query)}`),
+        { headers: apiHeaders() },
     );
 
     if (!response.ok) {
@@ -61,13 +59,13 @@ export async function startOnlineDownload(
 ): Promise<{ jobId: string }> {
 
     const response = await fetch(
-        `${API_BASE}/online/download`,
+        apiUrl('/online/download'),
         {
             method: 'POST',
 
-            headers: {
+            headers: apiHeaders({
                 'Content-Type': 'application/json',
-            },
+            }),
 
             body: JSON.stringify({
                 url,
@@ -99,7 +97,8 @@ export async function getOnlineDownloadStatus(
 ): Promise<DownloadJob> {
 
     const response = await fetch(
-        `${API_BASE}/online/download/${jobId}`,
+        apiUrl(`/online/download/${jobId}`),
+        { headers: apiHeaders() },
     );
 
     if (!response.ok) {
@@ -125,7 +124,8 @@ export interface DownloadPath {
 export async function getDownloadPath(): Promise<DownloadPath> {
 
     const response = await fetch(
-        `${API_BASE}/online/download-path`,
+        apiUrl('/online/download-path'),
+        { headers: apiHeaders() },
     );
 
     if (!response.ok) {
@@ -149,13 +149,13 @@ export async function setDownloadPath(
 ): Promise<DownloadPath> {
 
     const response = await fetch(
-        `${API_BASE}/online/download-path`,
+        apiUrl('/online/download-path'),
         {
             method: 'POST',
 
-            headers: {
+            headers: apiHeaders({
                 'Content-Type': 'application/json',
-            },
+            }),
 
             body: JSON.stringify({ path }),
         },
@@ -182,7 +182,8 @@ export async function getOnlineDownloadFile(
 ): Promise<File> {
 
     const response = await fetch(
-        `${API_BASE}/online/download/${jobId}/file`,
+        apiUrl(`/online/download/${jobId}/file`),
+        { headers: apiHeaders() },
     );
 
     if (!response.ok) {

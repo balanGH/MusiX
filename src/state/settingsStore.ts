@@ -14,6 +14,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { flatBands, type EqPresetName } from '@core/audio/equalizer';
 import type { ReplayGainMode } from '@core/audio/engine';
+import { configureServer } from '@core/net/apiBase';
 import type { EqBand } from '@core/types';
 
 export type ThemeChoice = 'system' | 'light' | 'dark' | 'amoled';
@@ -64,6 +65,16 @@ export interface SettingsState {
   /** Ask to rescan sources on launch instead of doing it automatically (§4). */
   scanOnLaunch: boolean;
 
+  // ---- PC server ----
+  /**
+   * Where Studio and Download reach the backend, e.g. `http://192.168.1.5:8000`.
+   * Empty means the default: same-origin `/api` through the Vite proxy on the
+   * desktop, and no server at all in the Android app.
+   */
+  serverUrl: string;
+  /** The server's `MUSIX_API_TOKEN`, if it sets one. */
+  serverToken: string;
+
   setTheme(theme: ThemeChoice): void;
   setAccent(accent: string): void;
   patch(patch: Partial<SettingsState>): void;
@@ -109,6 +120,9 @@ export const useSettings = create<SettingsState>()(
 
       scanOnLaunch: false,
 
+      serverUrl: '',
+      serverToken: '',
+
       setTheme: (theme) => set({ theme }),
       setAccent: (accent) => set({ accent }),
       patch: (patch) => set(patch),
@@ -126,6 +140,18 @@ export const useSettings = create<SettingsState>()(
     },
   ),
 );
+
+// The API base lives in core, which knows nothing of zustand: hand it the
+// persisted server now (localStorage rehydrates synchronously, above) and
+// again whenever it changes.
+const applyServer = (state: SettingsState) =>
+  configureServer({ url: state.serverUrl, token: state.serverToken });
+applyServer(useSettings.getState());
+useSettings.subscribe((state, previous) => {
+  if (state.serverUrl !== previous.serverUrl || state.serverToken !== previous.serverToken) {
+    applyServer(state);
+  }
+});
 
 /** Which concrete theme `system` currently resolves to. */
 export function resolveTheme(choice: ThemeChoice): 'light' | 'dark' | 'amoled' {

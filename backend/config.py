@@ -194,7 +194,21 @@ STEM_BITRATE = os.environ.get("MUSIX_STEM_BITRATE", "192k")
 # Server
 # --------------------------------------------------------------------------
 
-HOST = os.environ.get("MUSIX_HOST", "127.0.0.1")
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+#: Shared secret for the API. Empty means no authentication, which is right for
+#: the default loopback-only service and wrong for anything reachable from a
+#: network — see `check_lan_mode`. Sent as `Authorization: Bearer <token>`, or
+#: as `?token=` where a header cannot be set (an <audio> src, a download link).
+API_TOKEN = os.environ.get("MUSIX_API_TOKEN", "").strip()
+
+#: Serve the phone app over Wi-Fi: listen on every interface and answer to any
+#: Host header. Only allowed together with MUSIX_API_TOKEN.
+LAN_MODE = _env_flag("MUSIX_LAN")
+
+HOST = os.environ.get("MUSIX_HOST") or ("0.0.0.0" if LAN_MODE else "127.0.0.1")
 PORT = int(os.environ.get("MUSIX_PORT", 8000))
 
 # Only the local dev server and the built app are allowed.
@@ -207,8 +221,9 @@ ALLOWED_ORIGINS = [
     for origin in os.environ.get(
         "MUSIX_ALLOWED_ORIGINS",
         "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173,"
-        # The Capacitor shells (iOS and Android WebViews respectively).
-        "capacitor://localhost,https://localhost",
+        # The Capacitor shells: iOS, then Android with androidScheme
+        # 'https' and 'http' respectively.
+        "capacitor://localhost,https://localhost,http://localhost",
     ).split(",")
     if origin.strip()
 ]
@@ -218,11 +233,62 @@ ALLOWED_ORIGINS = [
 # 127.0.0.1 still sends `Host: evil.example`. The Vite proxy forwards the
 # browser's own Host (`changeOrigin: false`), i.e. `localhost` or `127.0.0.1`.
 # Add a LAN name or address here only if you deliberately expose the service.
-ALLOWED_HOSTS = [
-    host.strip()
-    for host in os.environ.get("MUSIX_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
-    if host.strip()
-]
+#
+# LAN mode accepts any Host: the phone reaches the PC by whatever address DHCP
+# handed out today, and with a token required a rebinding page gains nothing —
+# it cannot know the token.
+ALLOWED_HOSTS = (
+    ["*"]
+    if LAN_MODE
+    else [
+        host.strip()
+        for host in os.environ.get("MUSIX_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
+        if host.strip()
+    ]
+)
+
+
+def check_lan_mode() -> None:
+    """Refuse to run on the network without a password.
+
+    LAN mode exposes the user's audio, the download folder setting and a
+    yt-dlp front end to every device on the Wi-Fi; without a token any of them
+    could use it.
+    """
+    if LAN_MODE and not API_TOKEN:
+        raise SystemExit(
+            "MUSIX_LAN=1 needs a password. Set MUSIX_API_TOKEN to a long random string\n"
+            "and enter the same value in the app under Settings > PC server, e.g. in PowerShell:\n"
+            '  $env:MUSIX_API_TOKEN = "choose-a-long-random-password"'
+        )
+
+
+def lan_addresses() -> list[str]:
+    """This machine's IPv4 addresses other than loopback, best guess first.
+
+    Printed at startup so the user knows what to type into the phone.
+    """
+    import socket  # noqa: PLC0415 - only needed for this one-off
+
+    found: list[str] = []
+    # The address the OS would route outbound traffic through — the Wi-Fi or
+    # Ethernet adapter, usually. Connecting a UDP socket sends nothing.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("10.255.255.255", 1))
+            found.append(probe.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.append(str(info[4][0]))
+    except OSError:
+        pass
+    unique: list[str] = []
+    for address in found:
+        if not address.startswith("127.") and address != "0.0.0.0" and address not in unique:
+            unique.append(address)
+    return unique
 
 
 def ffmpeg_available() -> bool:

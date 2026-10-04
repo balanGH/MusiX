@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { getLyrics } from '@core/db/repositories/lyrics';
 import { fetchAndStoreLyrics } from '@core/lyrics/online';
+import { useBackendFeatures } from '@core/net/serverStatus';
 import { openTrackFile } from '@core/platform';
 import {
   DEFAULT_STEMS,
@@ -70,6 +71,7 @@ export function NowPlaying() {
   const toast = useUi((state) => state.toast);
   const onlineLyricsEnabled = useSettings((state) => state.onlineLyrics);
   const navigate = useNavigate();
+  const backendVisible = useBackendFeatures().visible;
 
   // Lyrics and the online lookup are both keyed to the track they belong to.
   // An online lookup can outlive its track (Next, or an auto-advance, while it
@@ -88,12 +90,17 @@ export function NowPlaying() {
 
   // Has this track already been split into stems? Checked against the local
   // studio service's job list, not run speculatively (spec §4) — separation
-  // only ever starts when "Split into stems" below is pressed.
+  // only ever starts when "Split into stems" below is pressed. In the Android
+  // app with no PC server connected there is nothing to ask, so no request.
   useEffect(() => {
     setMixerOpen(false);
     if (!open || !track) return;
     let cancelled = false;
     setStemStatus({ kind: 'idle' });
+    if (!backendVisible) {
+      setStemStatus({ kind: 'unavailable' });
+      return;
+    }
     void (async () => {
       const service = await probeService();
       if (cancelled) return;
@@ -110,7 +117,7 @@ export function NowPlaying() {
     return () => {
       cancelled = true;
     };
-  }, [open, track]);
+  }, [open, track, backendVisible]);
 
   const processStems = useCallback(
     async (target: Track) => {

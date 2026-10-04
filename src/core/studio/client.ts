@@ -18,12 +18,9 @@
  */
 
 import { createLogger, describeError } from '../logger';
-import { API_ROOT } from '../net/apiBase';
+import { apiHeaders, apiMediaUrl, apiUrl } from '../net/apiBase';
 
 const log = createLogger('studio');
-
-/** Same-origin by default; vite.config.ts proxies /api to the local service. */
-const API_BASE = API_ROOT;
 
 /** The stems `htdemucs_6s` produces. The default model gives the first four. */
 export const STEM_NAMES = ['vocals', 'drums', 'bass', 'guitar', 'piano', 'other'] as const;
@@ -68,7 +65,11 @@ export class StudioUnavailableError extends Error {
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${path}`, init);
+    // Resolved per call: the server can be changed in Settings at any time.
+    response = await fetch(apiUrl(path), {
+      ...init,
+      headers: apiHeaders(init?.headers as Record<string, string> | undefined),
+    });
   } catch (error) {
     // A network failure here means the local service is not running, which is
     // the normal case, not an error worth shouting about.
@@ -154,7 +155,10 @@ export function submitFile(
     if (options.displayName) form.append('name', options.displayName);
 
     const request = new XMLHttpRequest();
-    request.open('POST', `${API_BASE}/jobs`);
+    request.open('POST', apiUrl('/jobs'));
+    for (const [name, value] of Object.entries(apiHeaders())) {
+      request.setRequestHeader(name, value);
+    }
 
     request.upload.addEventListener('progress', (event) => {
       if (event.lengthComputable) options.onUploadProgress?.(event.loaded / event.total);
@@ -236,7 +240,10 @@ export async function waitForJob(
   }
 }
 
-/** Absolute URL for a produced stem, for playback and download. */
+/**
+ * URL for a produced stem, for playback and download. Used as an `<audio>` src
+ * and a link, neither of which can send headers, so it carries the token.
+ */
 export function stemUrl(jobId: string, stem: StemName): string {
-  return `${API_BASE}/jobs/${jobId}/stems/${stem}`;
+  return apiMediaUrl(`/jobs/${jobId}/stems/${stem}`);
 }

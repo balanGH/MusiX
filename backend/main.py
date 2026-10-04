@@ -23,12 +23,17 @@ What changed from the previous version, and why:
     `LocalRequestGuard`.
   * Stem downloads are served by name from a fixed set, so a crafted job id or
     stem name cannot escape the storage directory.
+  * An optional shared secret (`MUSIX_API_TOKEN`) guards every route but
+    /api/health, so the phone app can use the service over Wi-Fi
+    (`MUSIX_LAN=1`) without the rest of the network being able to — see
+    `ApiTokenGuard`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import time
 import uuid
@@ -39,13 +44,16 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
-from starlette.datastructures import Headers
+from starlette.datastructures import Headers, QueryParams
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 import audio_processor
 import config
 import downloader
+
+# Before anything else: LAN mode without a token must never start serving.
+config.check_lan_mode()
 
 app = FastAPI(title="MusiX Audio Studio", version="1.0.0")
 
@@ -137,15 +145,84 @@ async def _reject(status: int, detail: str, scope: Scope, receive: Receive, send
     await JSONResponse({"detail": detail}, status_code=status)(scope, receive, send)
 
 
-# The last one added runs first: host check, then CORS, then the guard — so an
-# allowed origin can still read the guard's error responses.
+HEALTH_ROUTE = "/api/health"
+
+
+def supplied_token(scope: Scope) -> str | None:
+    """The token a request carries, from `Authorization: Bearer` or `?token=`.
+
+    The query form exists for what cannot send headers: an <audio> element's
+    src and a plain download link.
+    """
+    authorization = Headers(scope=scope).get("authorization", "")
+    scheme, _, value = authorization.partition(" ")
+    if scheme.lower() == "bearer" and value.strip():
+        return value.strip()
+    query = QueryParams(scope.get("query_string", b"").decode("latin-1")).get("token")
+    return query or None
+
+
+def token_matches(token: str | None) -> bool:
+    """Constant-time comparison, so response timing cannot leak the token."""
+    if token is None:
+        return False
+    return hmac.compare_digest(token.encode("utf-8"), config.API_TOKEN.encode("utf-8"))
+
+
+class ApiTokenGuard:
+    """Requires `MUSIX_API_TOKEN` on every /api route when one is configured.
+
+    /api/health stays open so the app can tell "unreachable" from "needs a
+    password", but a *wrong* token sent to it is still refused — that is how
+    the app's "Test connection" reports a mistyped password. Preflights pass
+    untouched: browsers never attach credentials to them, and CORSMiddleware
+    (outside this guard) answers them anyway.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] != "http"
+            or not config.API_TOKEN
+            or scope["method"] == "OPTIONS"
+            or not scope["path"].startswith("/api")
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        token = supplied_token(scope)
+        if scope["path"] == HEALTH_ROUTE and token is None:
+            await self.app(scope, receive, send)
+            return
+
+        if not token_matches(token):
+            detail = (
+                "Wrong password for this MusiX server."
+                if token is not None
+                else "This MusiX server needs a password. Enter it in Settings > PC server."
+            )
+            await JSONResponse(
+                {"detail": detail},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
+
+
+# The last one added runs first: host check, then CORS, then the guards — so an
+# allowed origin can still read the guards' error responses (a 401 included).
+app.add_middleware(ApiTokenGuard)
 app.add_middleware(LocalRequestGuard)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=config.ALLOWED_HOSTS)
 
@@ -273,12 +350,18 @@ load_state()
 
 @app.get("/api/health")
 async def health() -> dict[str, object]:
-    """What the Studio page probes on open."""
+    """What the Studio page probes on open, and the app's "Test connection".
+
+    Open without a token (see `ApiTokenGuard`); `auth` tells the app whether
+    the other routes will want one.
+    """
     # Both import torch, which takes seconds; keep that off the event loop.
     device = await asyncio.to_thread(config.torch_device)
     model_ready = await asyncio.to_thread(audio_processor.model_is_downloaded, config.MODEL_NAME)
     return {
         "status": "ok",
+        "version": app.version,
+        "auth": "required" if config.API_TOKEN else "none",
         "model": config.MODEL_NAME,
         "device": device,
         "modelReady": model_ready,
@@ -680,6 +763,17 @@ if __name__ == "__main__":
     import uvicorn
 
     print(f"MusiX audio studio on http://{config.HOST}:{config.PORT}")
+    if config.HOST in {"0.0.0.0", "::"}:
+        addresses = config.lan_addresses()
+        if addresses:
+            print("  on your network (enter one in the app under Settings > PC server):")
+            for address in addresses:
+                print(f"    http://{address}:{config.PORT}")
+        else:
+            print("  on your network: no LAN address found — run `ipconfig` to find it")
+    print(f"  auth:   {'password required (MUSIX_API_TOKEN)' if config.API_TOKEN else 'none'}")
+    if not config.API_TOKEN and config.HOST not in {"127.0.0.1", "localhost", "::1"}:
+        print("  WARNING: listening beyond this machine with no MUSIX_API_TOKEN set")
     print(f"  model:  {config.MODEL_NAME} ({config.torch_device()})")
     print(f"  ffmpeg: {'found' if config.ffmpeg_available() else 'MISSING — install it'}")
     print(f"  demucs: {'found' if audio_processor.probe_demucs() else 'MISSING — pip install -r requirements.txt'}")

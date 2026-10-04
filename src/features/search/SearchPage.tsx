@@ -18,6 +18,7 @@ import {
 } from '@core/search';
 
 import { getCachedArtistPhoto } from '@core/artists/onlinePhoto';
+import { useBackendFeatures } from '@core/net/serverStatus';
 import { formatCount } from '@core/utils';
 import { useLibrary } from '@state/libraryStore';
 import { playerActions } from '@state/playerStore';
@@ -46,6 +47,9 @@ export function SearchPage() {
   const revision = useLibrary((state) => state.revision);
   const trackCount = useLibrary((state) => state.counts.tracks);
   const navigate = useNavigate();
+  // Online search runs on the backend; in the Android app without a PC server
+  // it is skipped entirely rather than failing on every query.
+  const onlineAvailable = useBackendFeatures().visible;
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [query, setQuery] = useState('');
@@ -133,8 +137,8 @@ export function SearchPage() {
             found.artists.length > 0 ||
             found.genres.length > 0;
 
-          // Found something locally.
-          if (hasLocalResults) {
+          // Found something locally, or there is nowhere to look online.
+          if (hasLocalResults || !onlineAvailable) {
             return;
           }
 
@@ -179,7 +183,7 @@ export function SearchPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [query, revision]);
+  }, [query, revision, onlineAvailable]);
 
   const trackIds = useMemo(() => results.tracks.map((track) => track.id), [results.tracks]);
 
